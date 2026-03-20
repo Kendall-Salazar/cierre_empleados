@@ -1,0 +1,12 @@
+# Le dice a Railway que instale Python Y Node.js en el mismo contenedor
+[phases.setup]
+nixPkgs = ["python312", "nodejs_20", "nodePackages.npm"]
+
+[phases.install]
+cmds = [
+  "pip install -r requirements.txt",
+  "cd frontend && npm install && npm run build && cd .."
+]
+
+[start]
+cmd = "uvicorn main:app --host 0.0.0.0 --port $PORT"
