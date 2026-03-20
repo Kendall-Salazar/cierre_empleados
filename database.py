@@ -1,21 +1,42 @@
 import os
+
 import psycopg2
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL no está configurado")
+
+def connect_db():
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        return psycopg2.connect(database_url)
+
+    pg_config = {
+        "host": os.environ.get("PGHOST"),
+        "port": os.environ.get("PGPORT"),
+        "user": os.environ.get("PGUSER"),
+        "password": os.environ.get("PGPASSWORD"),
+        "dbname": os.environ.get("PGDATABASE"),
+    }
+    if all(pg_config.values()):
+        return psycopg2.connect(**pg_config)
+
+    raise RuntimeError(
+        "Base de datos no configurada. Defini DATABASE_URL o las variables "
+        "PGHOST, PGPORT, PGUSER, PGPASSWORD y PGDATABASE."
+    )
+
 
 def get_db():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = connect_db()
     try:
         yield conn
     finally:
         conn.close()
 
+
 def init_db():
-    conn = psycopg2.connect(DATABASE_URL)
+    conn = connect_db()
     cur = conn.cursor()
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS cierres (
             id                   SERIAL PRIMARY KEY,
             fecha                DATE NOT NULL,
@@ -39,8 +60,9 @@ def init_db():
             observaciones        TEXT DEFAULT '',
             enviado_at           TIMESTAMP DEFAULT NOW()
         );
-    """)
+        """
+    )
     conn.commit()
     cur.close()
     conn.close()
-    print("✅ Base de datos lista")
+    print("Base de datos lista")
