@@ -1,8 +1,6 @@
-# Conserva el setup de Python de Nixpacks y agrega Node para compilar Vite.
 [phases.setup]
 nixPkgs = ["...", "nodejs_20", "nodePackages.npm"]
 
-# Deja que el provider de Python cree el venv e instale requirements.txt.
 [phases.build]
 dependsOn = ["install"]
 cmds = ["cd frontend && npm install && npm run build"]

@@ -1,552 +1,439 @@
-import { useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 
-// Rutas relativas — el frontend y el backend corren en el mismo servidor Railway
 const API_URL = "";
 
-async function api(path, options = {}) {
-  const res = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+async function api(path, options = {}, token = null) {
+  const headers = { ...(options.headers || {}) };
+  if (!(options.body instanceof FormData)) {
+    headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  }
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || "Error del servidor");
   }
-  return res.json();
+  const contentType = res.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) return res.json();
+  return res;
 }
 
-// ─── DIRECTORIO DE EMPLEADOS Y CÓDIGOS ────────────────────────────────────────
-// Cada empleado tiene un código PIN de 4 dígitos único.
-// El turno se llena automáticamente según la hora del día.
-const EMPLOYEE_DIRECTORY = {
-  "1001": { nombre: "Jeison",  turno_default: "1" },
-  "1002": { nombre: "Eligio",  turno_default: "2" },
-  "1003": { nombre: "Maikel",  turno_default: "3" },
-  "1004": { nombre: "Jensy",   turno_default: "4" },
-  "1005": { nombre: "Ileana",  turno_default: "5" },
-  "1006": { nombre: "Steven",  turno_default: "6" },
-  "1007": { nombre: "Randall", turno_default: "7" },
-  "1008": { nombre: "Angel",   turno_default: "8" },
-  "1009": { nombre: "Keilor",  turno_default: "9" },
-  "1010": { nombre: "Tomas",   turno_default: "10" },
-  "1011": { nombre: "Jensy B", turno_default: "11" },
-};
-
-// ─── HELPERS ──────────────────────────────────────────────────────────────────
-const today = () => new Date().toISOString().slice(0, 10);
-
-function getAutoTurno() {
-  const h = new Date().getHours();
-  if (h >= 5 && h < 13) return "1";
-  if (h >= 13 && h < 21) return "2";
-  return "3";
+function emptyMovement() {
+  return {
+    id: crypto.randomUUID(),
+    descripcion: "",
+    cliente: "",
+    referencia: "",
+    monto_reportado: "",
+    estado: "reportado",
+    observacion_empleado: "",
+  };
 }
 
-const emptyForm = () => ({
-  fecha: today(),
-  nombre: "",
-  turno: getAutoTurno(),
-  datafono: "",
-  vouchers: {
-    bcr_qty: "", bcr_monto: "",
-    bac_qty: "", bac_monto: "",
-    bac_flotas_qty: "", bac_flotas_monto: "",
-    versatec_qty: "", versatec_monto: "",
-    fleet_bncr_qty: "", fleet_bncr_monto: "",
-    fleet_dav_qty: "", fleet_dav_monto: "",
-    bncr_qty: "", bncr_monto: "",
-  },
-  creditos: [],
-  sinpes: [],
-  deposito: "",
-  vales: [],
-  pagos: [],
-  efectivo: "",
-  observaciones: "",
-});
-
-// ─── COMPONENTES BASE ─────────────────────────────────────────────────────────
-function SectionHeader({ icon, title, color = "#F59E0B" }) {
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 16px", marginBottom: 2, background: `linear-gradient(90deg, ${color}22 0%, transparent 100%)`, borderLeft: `3px solid ${color}`, borderRadius: "0 8px 8px 0" }}>
-      <span style={{ fontSize: 20 }}>{icon}</span>
-      <span style={{ fontFamily: "'Oswald', sans-serif", fontSize: 15, fontWeight: 600, color: "#F1F5F9", letterSpacing: 1, textTransform: "uppercase" }}>{title}</span>
-    </div>
-  );
+function emptyForm(defaultTurno = "1") {
+  return {
+    fecha: new Date().toISOString().slice(0, 10),
+    turno: defaultTurno || "1",
+    datafono: "",
+    vouchers: {
+      bcr_qty: "", bcr_monto: "",
+      bac_qty: "", bac_monto: "",
+      bac_flotas_qty: "", bac_flotas_monto: "",
+      versatec_qty: "", versatec_monto: "",
+      fleet_bncr_qty: "", fleet_bncr_monto: "",
+      fleet_dav_qty: "", fleet_dav_monto: "",
+      bncr_qty: "", bncr_monto: "",
+    },
+    creditos: [],
+    sinpes: [],
+    transferencias: [],
+    deposito: "",
+    vales: [],
+    pagos: [],
+    efectivo: "",
+    observaciones: "",
+  };
 }
 
-function Subtotal({ label, value, color = "#F59E0B" }) {
-  if (!value || value === 0) return null;
-  return (
-    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: `${color}15`, borderRadius: 8, border: `1px solid ${color}33`, marginTop: 6 }}>
-      <span style={{ fontFamily: "'Oswald', sans-serif", fontSize: 12, color, letterSpacing: 1, textTransform: "uppercase" }}>{label}</span>
-      <span style={{ fontFamily: "'Oswald', sans-serif", fontSize: 16, color, fontWeight: 700 }}>₡{value.toLocaleString("es-CR")}</span>
-    </div>
-  );
+function money(n) {
+  return Number(n || 0).toLocaleString("es-CR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
-function NumInput({ label, value, onChange, prefix = "₡", style = {} }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, ...style }}>
-      {label && <label style={{ fontSize: 11, color: "#94A3B8", fontFamily: "'Oswald', sans-serif", letterSpacing: 0.5, textTransform: "uppercase" }}>{label}</label>}
-      <div style={{ display: "flex", alignItems: "center", background: "#0F172A", borderRadius: 8, border: "1px solid #334155", overflow: "hidden" }}>
-        {prefix && <span style={{ padding: "0 10px", color: "#64748B", fontSize: 14, fontWeight: 700 }}>{prefix}</span>}
-        <input type="number" inputMode="numeric" placeholder="0" value={value} onChange={e => onChange(e.target.value)}
-          style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: "#F1F5F9", fontSize: 16, padding: "12px 10px 12px 0", fontFamily: "'Barlow', sans-serif", fontWeight: 600 }} />
-      </div>
-    </div>
-  );
+function useSession() {
+  const [token, setToken] = useState(localStorage.getItem("cierre_token") || "");
+  const [user, setUser] = useState(() => {
+    const raw = localStorage.getItem("cierre_user");
+    return raw ? JSON.parse(raw) : null;
+  });
+
+  const save = (nextToken, nextUser) => {
+    setToken(nextToken);
+    setUser(nextUser);
+    if (nextToken) localStorage.setItem("cierre_token", nextToken); else localStorage.removeItem("cierre_token");
+    if (nextUser) localStorage.setItem("cierre_user", JSON.stringify(nextUser)); else localStorage.removeItem("cierre_user");
+  };
+
+  return { token, user, save, clear: () => save("", null) };
 }
 
-function TextInput({ label, value, onChange, placeholder = "", readOnly = false }) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {label && <label style={{ fontSize: 11, color: "#94A3B8", fontFamily: "'Oswald', sans-serif", letterSpacing: 0.5, textTransform: "uppercase" }}>{label}</label>}
-      <input type="text" placeholder={placeholder} value={value} onChange={e => onChange(e.target.value)} readOnly={readOnly}
-        style={{ background: readOnly ? "#0a1628" : "#0F172A", border: `1px solid ${readOnly ? "#1E3A5F" : "#334155"}`, borderRadius: 8, color: readOnly ? "#60A5FA" : "#F1F5F9", fontSize: 15, padding: "12px 14px", fontFamily: "'Barlow', sans-serif", outline: "none", width: "100%", boxSizing: "border-box", cursor: readOnly ? "default" : "text" }} />
-    </div>
-  );
-}
-
-function VoucherRow({ label, qty, amount, onQtyChange, onAmountChange, color }) {
-  return (
-    <div style={{ background: "#0F172A", borderRadius: 10, padding: "12px 14px", border: `1px solid ${color}33` }}>
-      <div style={{ fontSize: 12, color, fontFamily: "'Oswald', sans-serif", fontWeight: 600, letterSpacing: 0.5, marginBottom: 8, textTransform: "uppercase" }}>{label}</div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10 }}>
-        <NumInput label="Cantidad" value={qty} onChange={onQtyChange} prefix="#" />
-        <NumInput label="Monto Total" value={amount} onChange={onAmountChange} />
-      </div>
-    </div>
-  );
-}
-
-function DynamicList({ items, onChange, fields, addLabel, color, showSubtotal = false, subtotalLabel }) {
-  const addRow = () => onChange([...items, Object.fromEntries(fields.map(f => [f.key, ""]))]);
-  const removeRow = i => onChange(items.filter((_, idx) => idx !== i));
-  const updateRow = (i, key, val) => onChange(items.map((item, idx) => idx === i ? { ...item, [key]: val } : item));
-  const subtotal = items.reduce((acc, it) => acc + (Number(it["monto"]) || 0), 0);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {items.map((item, i) => (
-        <div key={i} style={{ background: "#0F172A", borderRadius: 10, padding: "12px 14px", border: `1px solid ${color}33`, position: "relative" }}>
-          <button onClick={() => removeRow(i)} style={{ position: "absolute", top: 8, right: 8, background: "#EF444422", border: "none", borderRadius: 6, color: "#EF4444", fontSize: 16, cursor: "pointer", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
-          <div style={{ display: "grid", gridTemplateColumns: fields.map(f => f.flex || "1fr").join(" "), gap: 10, paddingRight: 32 }}>
-            {fields.map(f => f.type === "number"
-              ? <NumInput key={f.key} label={f.label} value={item[f.key]} onChange={v => updateRow(i, f.key, v)} />
-              : <TextInput key={f.key} label={f.label} value={item[f.key]} onChange={v => updateRow(i, f.key, v)} placeholder={f.placeholder || ""} />)}
-          </div>
-        </div>
-      ))}
-      <button onClick={addRow} style={{ background: `${color}18`, border: `1px dashed ${color}66`, borderRadius: 10, color, fontSize: 13, fontFamily: "'Oswald', sans-serif", letterSpacing: 0.5, padding: "10px 16px", cursor: "pointer", textTransform: "uppercase" }}>+ {addLabel}</button>
-      {showSubtotal && items.length > 0 && <Subtotal label={subtotalLabel} value={subtotal} color={color} />}
-    </div>
-  );
-}
-
-function CreditosList({ items, onChange }) {
-  const color = "#A78BFA";
-  const addRow = () => onChange([...items, { cliente: "", monto: "" }]);
-  const removeRow = i => onChange(items.filter((_, idx) => idx !== i));
-  const updateRow = (i, key, val) => onChange(items.map((item, idx) => idx === i ? { ...item, [key]: val } : item));
-  const subtotal = items.reduce((acc, it) => acc + (Number(it.monto) || 0), 0);
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-      {items.map((item, i) => (
-        <div key={i} style={{ background: "#0F172A", borderRadius: 10, padding: "12px 14px", border: `1px solid ${color}33`, position: "relative" }}>
-          <div style={{ fontSize: 11, color, fontFamily: "'Oswald', sans-serif", marginBottom: 6, letterSpacing: 0.5 }}>CRÉDITO #{i + 1}</div>
-          <button onClick={() => removeRow(i)} style={{ position: "absolute", top: 8, right: 8, background: "#EF444422", border: "none", borderRadius: 6, color: "#EF4444", fontSize: 16, cursor: "pointer", width: 28, height: 28, display: "flex", alignItems: "center", justifyContent: "center" }}>×</button>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1.5fr", gap: 10, paddingRight: 32 }}>
-            <TextInput label="Cliente / Empresa" value={item.cliente} onChange={v => updateRow(i, "cliente", v)} placeholder="Nombre del cliente" />
-            <NumInput label="Monto" value={item.monto} onChange={v => updateRow(i, "monto", v)} />
-          </div>
-        </div>
-      ))}
-      <button onClick={addRow} style={{ background: `${color}18`, border: `1px dashed ${color}66`, borderRadius: 10, color, fontSize: 13, fontFamily: "'Oswald', sans-serif", letterSpacing: 0.5, padding: "10px 16px", cursor: "pointer", textTransform: "uppercase" }}>+ Agregar Crédito</button>
-      {items.length > 0 && <Subtotal label={`Subtotal Créditos (${items.length})`} value={subtotal} color={color} />}
-    </div>
-  );
-}
-
-function GrandTotal({ vouchers, creditos, sinpes, deposito, vales, pagos, efectivo }) {
-  const V_KEYS = ["bcr_monto","bac_monto","bac_flotas_monto","versatec_monto","fleet_bncr_monto","fleet_dav_monto","bncr_monto"];
-  const sumObj = keys => keys.reduce((a, k) => a + (Number(vouchers?.[k]) || 0), 0);
-  const sumList = (arr, key) => (arr || []).reduce((a, it) => a + (Number(it[key]) || 0), 0);
-  const tV = sumObj(V_KEYS), tC = sumList(creditos, "monto"), tS = sumList(sinpes, "monto");
-  const tDep = Number(deposito || 0), tEf = Number(efectivo || 0);
-  const tVales = sumList(vales, "monto"), tPagos = sumList(pagos, "monto");
-  const grand = tV + tC + tS + tDep + tEf - tVales - tPagos;
-  const rows = [
-    ["💳 Tarjetas / Vouchers", tV, "#F59E0B"], ["🧾 Créditos", tC, "#A78BFA"],
-    ["📱 SINPE Móvil", tS, "#34D399"], ["🏦 Depósito", tDep, "#60A5FA"],
-    ["💵 Efectivo", tEf, "#10B981"], ["📄 Vales (−)", -tVales, "#EF4444"],
-    ["💸 Pagos (−)", -tPagos, "#F87171"],
-  ].filter(r => r[1] !== 0);
-  return (
-    <div style={{ background: "linear-gradient(135deg, #0F172A, #1a0a00)", borderRadius: 16, padding: "18px 16px", border: "2px solid #F59E0B55", marginBottom: 14 }}>
-      <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 13, color: "#F59E0B", letterSpacing: 2, textTransform: "uppercase", marginBottom: 14 }}>📊 Resumen del Turno</div>
-      {rows.map(([label, val, color]) => (
-        <div key={label} style={{ display: "flex", justifyContent: "space-between", paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #1E293B" }}>
-          <span style={{ fontFamily: "'Barlow', sans-serif", fontSize: 13, color: "#94A3B8" }}>{label}</span>
-          <span style={{ fontFamily: "'Barlow', sans-serif", fontSize: 14, fontWeight: 700, color: val < 0 ? "#EF4444" : color }}>{val < 0 ? "−" : ""}₡{Math.abs(val).toLocaleString("es-CR")}</span>
-        </div>
-      ))}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingTop: 6 }}>
-        <span style={{ fontFamily: "'Oswald', sans-serif", fontSize: 15, color: "#F1F5F9", letterSpacing: 1 }}>TOTAL REPORTADO</span>
-        <span style={{ fontFamily: "'Oswald', sans-serif", fontSize: 22, color: grand >= 0 ? "#10B981" : "#EF4444", fontWeight: 700 }}>₡{grand.toLocaleString("es-CR")}</span>
-      </div>
-    </div>
-  );
-}
-
-// ─── PANTALLA DE LOGIN CON PIN ─────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
+  const [mode, setMode] = useState("employee");
   const [pin, setPin] = useState("");
+  const [username, setUsername] = useState("supervisor");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
-  const [shake, setShake] = useState(false);
+  const [loading, setLoading] = useState(false);
 
-  const handleKey = (k) => {
-    if (k === "del") { setPin(p => p.slice(0, -1)); setError(""); return; }
-    if (pin.length >= 4) return;
-    const next = pin + k;
-    setPin(next);
-    if (next.length === 4) {
-      const emp = EMPLOYEE_DIRECTORY[next];
-      if (emp) {
-        setTimeout(() => onLogin(emp.nombre, emp.turno_default), 200);
-      } else {
-        setShake(true);
-        setError("Código incorrecto");
-        setTimeout(() => { setPin(""); setShake(false); setError(""); }, 900);
-      }
+  const submit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const payload = mode === "employee" ? { pin } : { username, password };
+      const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify(payload) });
+      onLogin(data.token, data.user);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const dots = Array.from({ length: 4 }, (_, i) => i < pin.length);
-
   return (
-    <div style={{ minHeight: "100vh", background: "#020818", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 11, color: "#F59E0B", letterSpacing: 3, textTransform: "uppercase", marginBottom: 6 }}>Servicentro La Marina</div>
-      <div style={{ fontSize: 36, marginBottom: 4 }}>⛽</div>
-      <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 22, color: "#F1F5F9", marginBottom: 6 }}>Cierre de Caja</div>
-      <div style={{ color: "#475569", fontSize: 13, fontFamily: "'Barlow', sans-serif", marginBottom: 32 }}>Ingresá tu código de empleado</div>
-
-      {/* PIN dots */}
-      <div style={{
-        display: "flex", gap: 16, marginBottom: 12,
-        animation: shake ? "shake 0.4s ease-in-out" : "none",
-      }}>
-        {dots.map((filled, i) => (
-          <div key={i} style={{
-            width: 16, height: 16, borderRadius: "50%",
-            background: filled ? "#F59E0B" : "transparent",
-            border: `2px solid ${filled ? "#F59E0B" : "#334155"}`,
-            transition: "all 0.15s"
-          }} />
-        ))}
-      </div>
-      {error && <div style={{ color: "#EF4444", fontSize: 13, fontFamily: "'Barlow', sans-serif", marginBottom: 12 }}>{error}</div>}
-
-      {/* Keypad */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 72px)", gap: 12 }}>
-        {["1","2","3","4","5","6","7","8","9","","0","del"].map((k, i) => (
-          k === "" ? <div key={i} /> :
-          <button key={i} onClick={() => handleKey(k)} style={{
-            height: 72, borderRadius: 14,
-            background: k === "del" ? "#1E293B" : "#0F172A",
-            border: `1px solid ${k === "del" ? "#334155" : "#1E293B"}`,
-            color: k === "del" ? "#64748B" : "#F1F5F9",
-            fontSize: k === "del" ? 18 : 24,
-            fontFamily: "'Oswald', sans-serif",
-            cursor: "pointer",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            transition: "background 0.1s",
-            WebkitTapHighlightColor: "transparent",
-          }}>
-            {k === "del" ? "⌫" : k}
-          </button>
-        ))}
-      </div>
-      <style>{`@keyframes shake { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }`}</style>
-    </div>
-  );
-}
-
-// ─── PANTALLA DE ÉXITO ─────────────────────────────────────────────────────────
-function SuccessScreen({ nombre, fecha, onNew }) {
-  return (
-    <div style={{ minHeight: "100vh", background: "#020818", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 24 }}>
-      <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 64, marginBottom: 16 }}>✅</div>
-        <h2 style={{ fontFamily: "'Oswald', sans-serif", color: "#10B981", fontSize: 28, marginBottom: 8 }}>Cierre Enviado</h2>
-        <p style={{ color: "#64748B", fontFamily: "'Barlow', sans-serif", fontSize: 15, marginBottom: 32 }}>{nombre} — {fecha}</p>
-        <button onClick={onNew} style={{ background: "linear-gradient(135deg, #F59E0B, #EF4444)", border: "none", borderRadius: 12, color: "#fff", fontSize: 15, fontFamily: "'Oswald', sans-serif", letterSpacing: 1, padding: "14px 32px", cursor: "pointer", textTransform: "uppercase" }}>Nuevo Cierre</button>
+    <div style={styles.pageCenter}>
+      <div style={styles.card}>
+        <h1 style={styles.title}>Cierre de Caja</h1>
+        <div style={styles.segmented}>
+          <button style={mode === "employee" ? styles.segmentActive : styles.segment} onClick={() => setMode("employee")}>Empleado</button>
+          <button style={mode === "staff" ? styles.segmentActive : styles.segment} onClick={() => setMode("staff")}>Supervisor / Admin</button>
+        </div>
+        <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
+          {mode === "employee" ? (
+            <input value={pin} onChange={(e) => setPin(e.target.value)} placeholder="PIN de empleado" style={styles.input} />
+          ) : (
+            <>
+              <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Usuario" style={styles.input} />
+              <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Contraseña" type="password" style={styles.input} />
+            </>
+          )}
+          {error && <div style={styles.error}>{error}</div>}
+          <button disabled={loading} style={styles.primaryButton}>{loading ? "Entrando..." : "Entrar"}</button>
+        </form>
       </div>
     </div>
   );
 }
 
-// ─── PANEL ADMINISTRADOR ───────────────────────────────────────────────────────
-function AdminView({ onBack }) {
-  const [records, setRecords] = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [filter, setFilter] = useState("");
+function DynamicList({ title, items, setItems }) {
+  const update = (idx, key, value) => setItems(items.map((item, i) => i === idx ? { ...item, [key]: value } : item));
+  const remove = (idx) => setItems(items.filter((_, i) => i !== idx));
+  return (
+    <div style={styles.section}>
+      <div style={styles.sectionHeader}>
+        <strong>{title}</strong>
+        <button type="button" style={styles.secondaryButton} onClick={() => setItems([...items, emptyMovement()])}>+ Agregar</button>
+      </div>
+      {items.length === 0 && <div style={styles.muted}>Sin registros.</div>}
+      {items.map((item, idx) => (
+        <div key={item.id || idx} style={styles.rowCard}>
+          <div style={styles.grid2}>
+            <input style={styles.input} value={item.descripcion || ""} onChange={(e) => update(idx, "descripcion", e.target.value)} placeholder="Descripción" />
+            <input style={styles.input} value={item.cliente || ""} onChange={(e) => update(idx, "cliente", e.target.value)} placeholder="Cliente" />
+            <input style={styles.input} value={item.referencia || ""} onChange={(e) => update(idx, "referencia", e.target.value)} placeholder="Referencia" />
+            <input style={styles.input} value={item.monto_reportado || ""} onChange={(e) => update(idx, "monto_reportado", e.target.value)} placeholder="Monto" />
+          </div>
+          <button type="button" style={styles.linkDanger} onClick={() => remove(idx)}>Eliminar</button>
+        </div>
+      ))}
+    </div>
+  );
+}
 
-  useEffect(() => {
-    (async () => {
-      try {
-        const keys = await window.storage.list("cierre:");
-        const all = await Promise.all(keys.keys.map(async k => {
-          try { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } catch { return null; }
-        }));
-        setRecords(all.filter(Boolean).sort((a, b) => b.timestamp - a.timestamp));
-      } catch { setRecords([]); }
-    })();
-  }, []);
+function CierreForm({ initial, onSave, employees = [], canChooseEmployee = false }) {
+  const [form, setForm] = useState(initial);
+  useEffect(() => setForm(initial), [initial]);
 
-  const sumList = (arr, key) => (arr || []).reduce((a, it) => a + (Number(it[key]) || 0), 0);
-  const V_KEYS = ["bcr_monto","bac_monto","bac_flotas_monto","versatec_monto","fleet_bncr_monto","fleet_dav_monto","bncr_monto"];
+  const setVoucher = (key, value) => setForm((prev) => ({ ...prev, vouchers: { ...prev.vouchers, [key]: value } }));
+  const total = useMemo(() => {
+    const voucherKeys = ["bcr_monto","bac_monto","bac_flotas_monto","versatec_monto","fleet_bncr_monto","fleet_dav_monto","bncr_monto"];
+    const vouchers = voucherKeys.reduce((acc, key) => acc + Number(form.vouchers[key] || 0), 0);
+    const listTotal = (arr) => arr.reduce((acc, item) => acc + Number(item.monto_reportado || 0), 0);
+    return vouchers + listTotal(form.creditos) + listTotal(form.sinpes) + listTotal(form.transferencias) + Number(form.deposito || 0) + Number(form.efectivo || 0) - listTotal(form.vales) - listTotal(form.pagos);
+  }, [form]);
 
-  const calcTotal = d => {
-    const tV = V_KEYS.reduce((a, k) => a + (Number(d.vouchers?.[k]) || 0), 0);
-    const tC = sumList(d.creditos, "monto"), tS = sumList(d.sinpes, "monto");
-    const tDep = Number(d.deposito || 0), tEf = Number(d.efectivo || 0);
-    return tV + tC + tS + tDep + tEf - sumList(d.vales, "monto") - sumList(d.pagos, "monto");
+  const submit = (e) => {
+    e.preventDefault();
+    onSave(form);
   };
 
-  const exportCSV = () => {
-    const header = ["fecha","empleado","turno","total_tarjetas","total_creditos","total_sinpe","deposito","efectivo","total_vales","total_pagos","total_reportado","observaciones","timestamp"];
-    const rows = records.map(d => {
-      const tV = V_KEYS.reduce((a, k) => a + (Number(d.vouchers?.[k]) || 0), 0);
-      return [d.fecha, d.nombre, d.turno, tV, sumList(d.creditos,"monto"), sumList(d.sinpes,"monto"), d.deposito||0, d.efectivo||0, sumList(d.vales,"monto"), sumList(d.pagos,"monto"), calcTotal(d), d.observaciones||"", new Date(d.timestamp).toISOString()].map(v => `"${v}"`).join(",");
-    });
-    const csv = [header.join(","), ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = `cierres_${new Date().toISOString().slice(0,10)}.csv`; a.click();
-  };
-
-  const filtered = records.filter(r => !filter || r.nombre?.toLowerCase().includes(filter.toLowerCase()) || r.fecha?.includes(filter));
-
-  if (selected) {
-    const d = selected;
-    const grand = calcTotal(d);
-    return (
-      <div style={{ minHeight: "100vh", background: "#020818", padding: "20px 16px", fontFamily: "'Barlow', sans-serif" }}>
-        <button onClick={() => setSelected(null)} style={{ background: "#1E293B", border: "none", color: "#94A3B8", borderRadius: 8, padding: "8px 16px", cursor: "pointer", marginBottom: 16, fontSize: 13 }}>← Volver</button>
-        <div style={{ background: "#0F172A", borderRadius: 14, padding: 20, border: "1px solid #1E293B" }}>
-          <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 20, color: "#F59E0B", marginBottom: 4 }}>{d.nombre}</div>
-          <div style={{ color: "#64748B", fontSize: 13, marginBottom: 16 }}>{d.fecha} — Turno {d.turno} {d.datafono ? `· ${d.datafono}` : ""}</div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, color: "#CBD5E1" }}><tbody>
-            {[["BCR",d.vouchers?.bcr_monto],["BAC",d.vouchers?.bac_monto],["BAC Flotas",d.vouchers?.bac_flotas_monto],["Versatec",d.vouchers?.versatec_monto],["Fleet BNCR",d.vouchers?.fleet_bncr_monto],["Fleet DAV",d.vouchers?.fleet_dav_monto],["BNCR",d.vouchers?.bncr_monto]].map(([l,v]) => v > 0 ? <tr key={l}><td style={{ padding: "3px 0", color: "#64748B" }}>{l}</td><td style={{ textAlign: "right" }}>₡{Number(v).toLocaleString()}</td></tr> : null)}
-            {V_KEYS.reduce((a, k) => a + (Number(d.vouchers?.[k]) || 0), 0) > 0 && <tr><td style={{ padding: "6px 0 4px", fontWeight: 700, color: "#F1F5F9" }}>Vouchers</td><td style={{ textAlign: "right", fontWeight: 700, color: "#F59E0B" }}>₡{V_KEYS.reduce((a, k) => a + (Number(d.vouchers?.[k]) || 0), 0).toLocaleString()}</td></tr>}
-            {(d.creditos || []).map((c, i) => <tr key={i}><td style={{ color: "#64748B", paddingLeft: 8 }}>{c.cliente || `Crédito ${i+1}`}</td><td style={{ textAlign: "right", color: "#A78BFA" }}>₡{Number(c.monto).toLocaleString()}</td></tr>)}
-            {sumList(d.creditos,"monto") > 0 && <tr><td style={{ fontWeight: 700, color: "#F1F5F9", padding: "4px 0" }}>Créditos ({(d.creditos||[]).length})</td><td style={{ textAlign: "right", fontWeight: 700, color: "#A78BFA" }}>₡{sumList(d.creditos,"monto").toLocaleString()}</td></tr>}
-            {(d.sinpes || []).map((s, i) => <tr key={i}><td style={{ color: "#64748B", paddingLeft: 8 }}>{s.descripcion || `SINPE ${i+1}`}</td><td style={{ textAlign: "right", color: "#34D399" }}>₡{Number(s.monto).toLocaleString()}</td></tr>)}
-            {sumList(d.sinpes,"monto") > 0 && <tr><td style={{ fontWeight: 700, color: "#F1F5F9", padding: "4px 0" }}>SINPE</td><td style={{ textAlign: "right", fontWeight: 700, color: "#34D399" }}>₡{sumList(d.sinpes,"monto").toLocaleString()}</td></tr>}
-            {Number(d.deposito||0) > 0 && <tr><td style={{ color: "#64748B" }}>Depósito</td><td style={{ textAlign: "right", color: "#60A5FA" }}>₡{Number(d.deposito).toLocaleString()}</td></tr>}
-            {Number(d.efectivo||0) > 0 && <tr><td style={{ color: "#64748B" }}>Efectivo</td><td style={{ textAlign: "right", color: "#10B981" }}>₡{Number(d.efectivo).toLocaleString()}</td></tr>}
-            {sumList(d.vales,"monto") > 0 && <tr><td style={{ color: "#EF4444" }}>Vales (−)</td><td style={{ textAlign: "right", color: "#EF4444" }}>₡{sumList(d.vales,"monto").toLocaleString()}</td></tr>}
-            {sumList(d.pagos,"monto") > 0 && <tr><td style={{ color: "#EF4444" }}>Pagos (−)</td><td style={{ textAlign: "right", color: "#EF4444" }}>₡{sumList(d.pagos,"monto").toLocaleString()}</td></tr>}
-            <tr><td colSpan={2} style={{ borderTop: "1px solid #334155", padding: "8px 0" }}></td></tr>
-            <tr><td style={{ fontFamily: "'Oswald', sans-serif", fontSize: 16, color: "#F1F5F9" }}>TOTAL</td><td style={{ textAlign: "right", fontFamily: "'Oswald', sans-serif", fontSize: 20, color: grand >= 0 ? "#10B981" : "#EF4444" }}>₡{grand.toLocaleString()}</td></tr>
-          </tbody></table>
-          {d.observaciones && <div style={{ marginTop: 14, padding: 12, background: "#1E293B", borderRadius: 8, color: "#94A3B8", fontSize: 13 }}><strong style={{ color: "#F1F5F9" }}>Obs:</strong> {d.observaciones}</div>}
+  return (
+    <form onSubmit={submit} style={{ display: "grid", gap: 16 }}>
+      <div style={styles.grid2}>
+        <input type="date" style={styles.input} value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} />
+        <input style={styles.input} value={form.turno} onChange={(e) => setForm({ ...form, turno: e.target.value })} placeholder="Turno" />
+        <input style={styles.input} value={form.datafono} onChange={(e) => setForm({ ...form, datafono: e.target.value })} placeholder="Datafono" />
+        <input style={styles.input} value={form.efectivo} onChange={(e) => setForm({ ...form, efectivo: e.target.value })} placeholder="Efectivo" />
+        <input style={styles.input} value={form.deposito} onChange={(e) => setForm({ ...form, deposito: e.target.value })} placeholder="Depósito" />
+        {canChooseEmployee ? (
+          <select style={styles.input} value={form.employee_id || ""} onChange={(e) => setForm({ ...form, employee_id: Number(e.target.value) || null })}>
+            <option value="">Empleado</option>
+            {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
+          </select>
+        ) : null}
+      </div>
+      <div style={styles.section}>
+        <strong>Vouchers</strong>
+        <div style={styles.grid2}>
+          {[
+            ["bcr_monto", "BCR"], ["bac_monto", "BAC"], ["bac_flotas_monto", "BAC Flotas"],
+            ["versatec_monto", "Versatec"], ["fleet_bncr_monto", "Fleet BNCR"], ["fleet_dav_monto", "Fleet DAV"], ["bncr_monto", "BNCR"]
+          ].map(([key, label]) => (
+            <input key={key} style={styles.input} value={form.vouchers[key] || ""} onChange={(e) => setVoucher(key, e.target.value)} placeholder={label} />
+          ))}
         </div>
       </div>
-    );
-  }
-
-  return (
-    <div style={{ minHeight: "100vh", background: "#020818", padding: "20px 16px", fontFamily: "'Barlow', sans-serif" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <button onClick={onBack} style={{ background: "#1E293B", border: "none", color: "#94A3B8", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 13 }}>← Salir</button>
-        <button onClick={exportCSV} style={{ background: "#10B98122", border: "1px solid #10B98144", color: "#10B981", borderRadius: 8, padding: "8px 16px", cursor: "pointer", fontSize: 13, fontFamily: "'Oswald', sans-serif" }}>⬇ CSV</button>
-      </div>
-      <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 22, color: "#F59E0B", marginBottom: 12 }}>📋 Cierres — {records.length} registros</div>
-      <input placeholder="Filtrar por nombre o fecha..." value={filter} onChange={e => setFilter(e.target.value)}
-        style={{ width: "100%", background: "#0F172A", border: "1px solid #334155", borderRadius: 8, color: "#F1F5F9", fontSize: 14, padding: "10px 14px", outline: "none", marginBottom: 14, boxSizing: "border-box" }} />
-      {filtered.length === 0
-        ? <div style={{ color: "#475569", textAlign: "center", padding: 40 }}>No hay cierres.</div>
-        : filtered.map((r, i) => (
-          <div key={i} onClick={() => setSelected(r)} style={{ background: "#0F172A", borderRadius: 12, padding: "14px 16px", marginBottom: 10, border: "1px solid #1E293B", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ color: "#F1F5F9", fontWeight: 600, fontSize: 15 }}>{r.nombre}</div>
-              <div style={{ color: "#64748B", fontSize: 12, marginTop: 2 }}>{r.fecha} · Turno {r.turno}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ color: "#10B981", fontFamily: "'Oswald', sans-serif", fontSize: 14 }}>₡{calcTotal(r).toLocaleString()}</div>
-              <span style={{ color: "#475569", fontSize: 18 }}>›</span>
-            </div>
-          </div>
-        ))}
-    </div>
+      <DynamicList title="Créditos" items={form.creditos} setItems={(creditos) => setForm({ ...form, creditos })} />
+      <DynamicList title="SINPE móvil" items={form.sinpes} setItems={(sinpes) => setForm({ ...form, sinpes })} />
+      <DynamicList title="Transferencias" items={form.transferencias} setItems={(transferencias) => setForm({ ...form, transferencias })} />
+      <DynamicList title="Vales" items={form.vales} setItems={(vales) => setForm({ ...form, vales })} />
+      <DynamicList title="Pagos" items={form.pagos} setItems={(pagos) => setForm({ ...form, pagos })} />
+      <textarea style={styles.textarea} value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} placeholder="Observaciones" />
+      <div style={styles.totalBox}>Total reportado: ₡{money(total)}</div>
+      <button style={styles.primaryButton}>Guardar cierre</button>
+    </form>
   );
 }
 
-// ─── APP PRINCIPAL ─────────────────────────────────────────────────────────────
-export default function App() {
-  const [screen, setScreen] = useState("login"); // login | form | success | admin
-  const [form, setForm] = useState(emptyForm());
-  const [submittedData, setSubmittedData] = useState(null);
-  const [adminPass, setAdminPass] = useState("");
-  const [showPass, setShowPass] = useState(false);
+function EmployeeDashboard({ token, user, onLogout }) {
+  const [cierres, setCierres] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [message, setMessage] = useState("");
 
-  const handleLogin = (nombre, turnoDefault) => {
-    setForm(f => ({ ...f, nombre, turno: turnoDefault }));
-    setScreen("form");
+  const load = async () => {
+    const data = await api("/api/cierres", {}, token);
+    setCierres(data);
   };
+  useEffect(() => { load(); }, []);
 
-  const setV = (k, v) => setForm(f => ({ ...f, vouchers: { ...f.vouchers, [k]: v } }));
-  const vTot = ["bcr_monto","bac_monto","bac_flotas_monto","versatec_monto","fleet_bncr_monto","fleet_dav_monto","bncr_monto"].reduce((a, k) => a + (Number(form.vouchers[k]) || 0), 0);
-
-  const handleSubmit = async () => {
-    if (!form.nombre || !form.fecha) return alert("Falta información básica.");
-    const data = { ...form, timestamp: Date.now() };
-    try { await window.storage.set(`cierre:${data.timestamp}`, JSON.stringify(data)); } catch {}
-    setSubmittedData(data);
-    setScreen("success");
+  const save = async (payload) => {
+    setMessage("");
+    if (editing?.id) {
+      await api(`/api/cierres/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) }, token);
+      setMessage("Cierre actualizado.");
+    } else {
+      await api("/api/cierres", { method: "POST", body: JSON.stringify(payload) }, token);
+      setMessage("Cierre creado.");
+    }
+    setEditing(null);
+    load();
   };
-
-  if (screen === "login") return (<><link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow:wght@400;600;700&display=swap" rel="stylesheet" /><LoginScreen onLogin={handleLogin} /></>);
-  if (screen === "success") return (<><link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow:wght@400;600;700&display=swap" rel="stylesheet" /><SuccessScreen nombre={submittedData.nombre} fecha={submittedData.fecha} onNew={() => setScreen("login")} /></>);
-  if (screen === "admin") return (<><link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow:wght@400;600;700&display=swap" rel="stylesheet" /><AdminView onBack={() => setScreen("login")} /></>);
-
-  const s = (ex = {}) => ({ background: "#0D1B2A", borderRadius: 14, padding: "16px 14px", border: "1px solid #1E293B", marginBottom: 12, ...ex });
 
   return (
-    <>
-      <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=Barlow:wght@400;600;700&display=swap" rel="stylesheet" />
-      <div style={{ minHeight: "100vh", background: "#020818", paddingBottom: 40 }}>
-
-        {/* Header */}
-        <div style={{ background: "linear-gradient(135deg, #0F172A 0%, #1a0a00 100%)", padding: "20px 20px 16px", borderBottom: "2px solid #F59E0B44", marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-            <div>
-              <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 11, color: "#F59E0B", letterSpacing: 3, textTransform: "uppercase", marginBottom: 2 }}>Servicentro La Marina</div>
-              <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 20, color: "#F1F5F9", fontWeight: 700 }}>Cierre de Caja</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontFamily: "'Oswald', sans-serif", fontSize: 18, color: "#F59E0B" }}>{form.nombre}</div>
-              <button onClick={() => setScreen("login")} style={{ background: "none", border: "none", color: "#475569", fontSize: 11, cursor: "pointer", fontFamily: "'Barlow', sans-serif" }}>← cambiar</button>
-            </div>
-          </div>
+    <div style={styles.page}>
+      <Header user={user} onLogout={onLogout} title="Panel de empleado" />
+      {message && <div style={styles.success}>{message}</div>}
+      <div style={styles.columns}>
+        <div style={styles.panel}>
+          <h3>{editing ? "Editar cierre" : "Nuevo cierre"}</h3>
+          <CierreForm initial={editing?.reportado_json || emptyForm(user.default_turno)} onSave={save} />
+          {editing && <button style={styles.linkButton} onClick={() => setEditing(null)}>Cancelar edición</button>}
         </div>
-
-        <div style={{ padding: "0 14px" }}>
-
-          {/* Fecha y Turno (solo lectura nombre, editable fecha y turno) */}
-          <div style={s()}>
-            <SectionHeader icon="📝" title="Información del Turno" color="#6366F1" />
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <label style={{ fontSize: 11, color: "#94A3B8", fontFamily: "'Oswald', sans-serif", letterSpacing: 0.5, textTransform: "uppercase" }}>Fecha</label>
-                  <input type="date" value={form.fecha} onChange={e => setForm(f => ({ ...f, fecha: e.target.value }))}
-                    style={{ background: "#0F172A", border: "1px solid #334155", borderRadius: 8, color: "#F1F5F9", fontSize: 15, padding: "12px 10px", fontFamily: "'Barlow', sans-serif", outline: "none" }} />
-                </div>
-                <TextInput label="# de Turno" value={form.turno} onChange={v => setForm(f => ({ ...f, turno: v }))} />
+        <div style={styles.panel}>
+          <h3>Mis cierres</h3>
+          {cierres.map((cierre) => (
+            <div key={cierre.id} style={styles.listItem}>
+              <div>
+                <strong>{cierre.fecha}</strong> · turno {cierre.turno}<br />
+                <span style={styles.muted}>{cierre.status}</span>
               </div>
-              <TextInput label="ID del Datafono (opcional)" value={form.datafono} onChange={v => setForm(f => ({ ...f, datafono: v }))} placeholder="ej. TER-001" />
+              <div style={{ display: "grid", gap: 8 }}>
+                <span>₡{money(cierre.resumen_reportado?.total_reportado || 0)}</span>
+                {cierre.status === "submitted" || cierre.status === "observed" || cierre.status === "draft" ? (
+                  <button style={styles.secondaryButton} onClick={() => setEditing(cierre)}>Editar</button>
+                ) : null}
+              </div>
             </div>
-          </div>
-
-          {/* Vouchers */}
-          <div style={s()}>
-            <SectionHeader icon="💳" title="Vouchers / Tarjetas" color="#F59E0B" />
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
-              <VoucherRow label="BCR" qty={form.vouchers.bcr_qty} amount={form.vouchers.bcr_monto} onQtyChange={v => setV("bcr_qty",v)} onAmountChange={v => setV("bcr_monto",v)} color="#3B82F6" />
-              <VoucherRow label="BAC" qty={form.vouchers.bac_qty} amount={form.vouchers.bac_monto} onQtyChange={v => setV("bac_qty",v)} onAmountChange={v => setV("bac_monto",v)} color="#8B5CF6" />
-              <VoucherRow label="BAC Flotas" qty={form.vouchers.bac_flotas_qty} amount={form.vouchers.bac_flotas_monto} onQtyChange={v => setV("bac_flotas_qty",v)} onAmountChange={v => setV("bac_flotas_monto",v)} color="#7C3AED" />
-              <VoucherRow label="Versatec" qty={form.vouchers.versatec_qty} amount={form.vouchers.versatec_monto} onQtyChange={v => setV("versatec_qty",v)} onAmountChange={v => setV("versatec_monto",v)} color="#10B981" />
-              <VoucherRow label="Fleetmagic BNCR" qty={form.vouchers.fleet_bncr_qty} amount={form.vouchers.fleet_bncr_monto} onQtyChange={v => setV("fleet_bncr_qty",v)} onAmountChange={v => setV("fleet_bncr_monto",v)} color="#06B6D4" />
-              <VoucherRow label="Fleetmagic DAV" qty={form.vouchers.fleet_dav_qty} amount={form.vouchers.fleet_dav_monto} onQtyChange={v => setV("fleet_dav_qty",v)} onAmountChange={v => setV("fleet_dav_monto",v)} color="#0EA5E9" />
-              <VoucherRow label="BNCR" qty={form.vouchers.bncr_qty} amount={form.vouchers.bncr_monto} onQtyChange={v => setV("bncr_qty",v)} onAmountChange={v => setV("bncr_monto",v)} color="#EAB308" />
-              <Subtotal label="Subtotal Tarjetas" value={vTot} color="#F59E0B" />
-            </div>
-          </div>
-
-          {/* Créditos */}
-          <div style={s()}>
-            <SectionHeader icon="🧾" title="Créditos" color="#A78BFA" />
-            <div style={{ marginTop: 4, marginBottom: 10, color: "#475569", fontSize: 12, fontFamily: "'Barlow', sans-serif" }}>Agregá cada crédito por separado</div>
-            <CreditosList items={form.creditos} onChange={v => setForm(f => ({ ...f, creditos: v }))} />
-          </div>
-
-          {/* SINPE */}
-          <div style={s()}>
-            <SectionHeader icon="📱" title="SINPE Móvil" color="#34D399" />
-            <div style={{ marginTop: 12 }}>
-              <DynamicList items={form.sinpes} onChange={v => setForm(f => ({ ...f, sinpes: v }))}
-                fields={[{ key: "descripcion", label: "Descripción / Ref.", placeholder: "ej. SINPE cliente", flex: "2fr" }, { key: "monto", label: "Monto", type: "number", flex: "1.5fr" }]}
-                addLabel="Agregar SINPE" color="#34D399" showSubtotal subtotalLabel="Subtotal SINPE" />
-            </div>
-          </div>
-
-          {/* Depósito */}
-          <div style={s()}>
-            <SectionHeader icon="🏦" title="Depósito Bancario" color="#60A5FA" />
-            <div style={{ marginTop: 12 }}>
-              <NumInput label="Monto Depositado" value={form.deposito} onChange={v => setForm(f => ({ ...f, deposito: v }))} />
-            </div>
-          </div>
-
-          {/* Vales */}
-          <div style={s()}>
-            <SectionHeader icon="📄" title="Vales" color="#FBBF24" />
-            <div style={{ marginTop: 4, marginBottom: 10, color: "#475569", fontSize: 12 }}>Combustible sin cobro inmediato (dueño, finca, etc.)</div>
-            <DynamicList items={form.vales} onChange={v => setForm(f => ({ ...f, vales: v }))}
-              fields={[{ key: "descripcion", label: "Descripción", placeholder: "ej. Don Carlos", flex: "2fr" }, { key: "monto", label: "Monto", type: "number", flex: "1.5fr" }]}
-              addLabel="Agregar Vale" color="#FBBF24" showSubtotal subtotalLabel="Subtotal Vales" />
-          </div>
-
-          {/* Pagos */}
-          <div style={s()}>
-            <SectionHeader icon="💸" title="Pagos Realizados" color="#F87171" />
-            <div style={{ marginTop: 4, marginBottom: 10, color: "#475569", fontSize: 12 }}>Pagos a empleados u otros desde la caja</div>
-            <DynamicList items={form.pagos} onChange={v => setForm(f => ({ ...f, pagos: v }))}
-              fields={[{ key: "descripcion", label: "A quién / Motivo", placeholder: "ej. salario semanal", flex: "2fr" }, { key: "monto", label: "Monto", type: "number", flex: "1.5fr" }]}
-              addLabel="Agregar Pago" color="#F87171" showSubtotal subtotalLabel="Subtotal Pagos" />
-          </div>
-
-          {/* Efectivo */}
-          <div style={s({ border: "1px solid #10B98144" })}>
-            <SectionHeader icon="💵" title="Efectivo en Caja" color="#10B981" />
-            <div style={{ marginTop: 12 }}>
-              <NumInput label="Total efectivo recogido en el turno" value={form.efectivo} onChange={v => setForm(f => ({ ...f, efectivo: v }))} />
-            </div>
-          </div>
-
-          {/* Observaciones */}
-          <div style={s()}>
-            <SectionHeader icon="💬" title="Observaciones" color="#94A3B8" />
-            <div style={{ marginTop: 12 }}>
-              <textarea value={form.observaciones} onChange={e => setForm(f => ({ ...f, observaciones: e.target.value }))}
-                placeholder="Notas adicionales..."
-                style={{ width: "100%", minHeight: 80, background: "#0F172A", border: "1px solid #334155", borderRadius: 10, color: "#F1F5F9", fontSize: 14, padding: "12px 14px", fontFamily: "'Barlow', sans-serif", outline: "none", resize: "vertical", boxSizing: "border-box" }} />
-            </div>
-          </div>
-
-          {/* Resumen total */}
-          <GrandTotal vouchers={form.vouchers} creditos={form.creditos} sinpes={form.sinpes} deposito={form.deposito} vales={form.vales} pagos={form.pagos} efectivo={form.efectivo} />
-
-          {/* Submit */}
-          <button onClick={handleSubmit} style={{ width: "100%", padding: "16px 20px", background: "linear-gradient(135deg, #F59E0B 0%, #EF4444 100%)", border: "none", borderRadius: 14, color: "#fff", fontFamily: "'Oswald', sans-serif", fontSize: 18, fontWeight: 700, letterSpacing: 2, textTransform: "uppercase", cursor: "pointer", boxShadow: "0 8px 32px #F59E0B44", marginBottom: 12 }}>
-            Enviar Cierre ›
-          </button>
-
-          {/* Acceso supervisor oculto */}
-          <div style={{ textAlign: "center", paddingBottom: 20 }}>
-            {!showPass
-              ? <button onClick={() => setShowPass(true)} style={{ background: "none", border: "none", color: "#1E293B", fontSize: 12, cursor: "pointer" }}>···</button>
-              : <div style={{ display: "flex", gap: 8 }}>
-                <input type="password" placeholder="Contraseña supervisor" value={adminPass} onChange={e => setAdminPass(e.target.value)}
-                  style={{ flex: 1, background: "#0F172A", border: "1px solid #334155", borderRadius: 8, color: "#F1F5F9", fontSize: 13, padding: "10px 12px", outline: "none" }} />
-                <button onClick={() => { if (adminPass === "marina2024") { setScreen("admin"); setShowPass(false); setAdminPass(""); } else alert("Contraseña incorrecta"); }}
-                  style={{ background: "#1E293B", border: "none", color: "#94A3B8", borderRadius: 8, padding: "0 16px", cursor: "pointer", fontSize: 13 }}>Entrar</button>
-              </div>}
-          </div>
+          ))}
         </div>
       </div>
-    </>
+    </div>
   );
 }
+
+function ReviewPanel({ token, employees }) {
+  const [cierres, setCierres] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [notes, setNotes] = useState("");
+  const [status, setStatus] = useState("document_reviewed");
+
+  const load = async () => {
+    const data = await api("/api/cierres", {}, token);
+    setCierres(data);
+  };
+  useEffect(() => { load(); }, []);
+
+  const submitReview = async () => {
+    await api(`/api/cierres/${selected.id}/review`, {
+      method: "POST",
+      body: JSON.stringify({ validado_json: selected.validado_json || selected.reportado_json, audit_notes: notes, status }),
+    }, token);
+    setSelected(null);
+    setNotes("");
+    load();
+  };
+
+  return (
+    <div style={styles.columns}>
+      <div style={styles.panel}>
+        <h3>Cierres para revisión</h3>
+        {cierres.map((cierre) => (
+          <div key={cierre.id} style={styles.listItem} onClick={() => { setSelected(cierre); setNotes(cierre.audit_notes || ""); setStatus(cierre.status || "document_reviewed"); }}>
+            <div>
+              <strong>{cierre.empleado}</strong><br />
+              <span style={styles.muted}>{cierre.fecha} · turno {cierre.turno}</span>
+            </div>
+            <div>{cierre.status}</div>
+          </div>
+        ))}
+      </div>
+      <div style={styles.panel}>
+        {selected ? (
+          <>
+            <h3>Revisión de {selected.empleado}</h3>
+            <pre style={styles.codeBox}>{JSON.stringify(selected.reportado_json, null, 2)}</pre>
+            <textarea style={styles.textarea} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notas de auditoría" />
+            <select style={styles.input} value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="document_reviewed">Documental revisado</option>
+              <option value="observed">Observado</option>
+              <option value="approved">Aprobado</option>
+            </select>
+            <button style={styles.primaryButton} onClick={submitReview}>Guardar revisión</button>
+          </>
+        ) : <div style={styles.muted}>Selecciona un cierre.</div>}
+      </div>
+    </div>
+  );
+}
+
+function GasproPanel({ token }) {
+  const [imports, setImports] = useState([]);
+  const [file, setFile] = useState(null);
+  const [mode, setMode] = useState("general");
+  const [dateFrom, setDateFrom] = useState(new Date().toISOString().slice(0, 10));
+  const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
+  const [message, setMessage] = useState("");
+
+  const load = async () => setImports(await api("/api/gaspro/imports", {}, token));
+  useEffect(() => { load(); }, []);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    const form = new FormData();
+    form.append("import_mode", mode);
+    form.append("date_from", dateFrom);
+    form.append("date_to", dateTo);
+    form.append("file", file);
+    const data = await api("/api/gaspro/import", { method: "POST", body: form }, token);
+    setMessage(`Importación ${data.import_id} aplicada a ${data.matched_cierres} cierres.`);
+    setFile(null);
+    load();
+  };
+
+  return (
+    <div style={styles.columns}>
+      <div style={styles.panel}>
+        <h3>Subir Gaspro</h3>
+        <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
+          <select style={styles.input} value={mode} onChange={(e) => setMode(e.target.value)}>
+            <option value="general">General</option>
+            <option value="detailed">Detallado</option>
+          </select>
+          <input type="date" style={styles.input} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
+          <input type="date" style={styles.input} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
+          <input type="file" style={styles.input} onChange={(e) => setFile(e.target.files?.[0] || null)} />
+          <button disabled={!file} style={styles.primaryButton}>Importar</button>
+        </form>
+        {message && <div style={styles.success}>{message}</div>}
+      </div>
+      <div style={styles.panel}>
+        <h3>Historial de importaciones</h3>
+        {imports.map((imp) => (
+          <div key={imp.id} style={styles.listItem}>
+            <div>
+              <strong>{imp.original_name}</strong><br />
+              <span style={styles.muted}>{imp.date_from} → {imp.date_to}</span>
+            </div>
+            <div>{imp.matched_cierres} cierres</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function StaffDashboard({ token, user, onLogout }) {
+  const [tab, setTab] = useState("review");
+  const [employees, setEmployees] = useState([]);
+  useEffect(() => {
+    api("/api/users?role=employee", {}, token).then(setEmployees).catch(() => setEmployees([]));
+  }, []);
+  return (
+    <div style={styles.page}>
+      <Header user={user} onLogout={onLogout} title={`Panel ${user.role}`} />
+      <div style={styles.segmented}>
+        <button style={tab === "review" ? styles.segmentActive : styles.segment} onClick={() => setTab("review")}>Revisión</button>
+        <button style={tab === "gaspro" ? styles.segmentActive : styles.segment} onClick={() => setTab("gaspro")}>Gaspro</button>
+      </div>
+      {tab === "review" ? <ReviewPanel token={token} employees={employees} /> : <GasproPanel token={token} />}
+    </div>
+  );
+}
+
+function Header({ user, onLogout, title }) {
+  return (
+    <div style={styles.header}>
+      <div>
+        <div style={styles.muted}>{title}</div>
+        <h2 style={{ margin: 0 }}>{user.full_name}</h2>
+      </div>
+      <button style={styles.secondaryButton} onClick={onLogout}>Salir</button>
+    </div>
+  );
+}
+
+export default function App() {
+  const session = useSession();
+  if (!session.token || !session.user) return <LoginScreen onLogin={session.save} />;
+  return session.user.role === "employee"
+    ? <EmployeeDashboard token={session.token} user={session.user} onLogout={session.clear} />
+    : <StaffDashboard token={session.token} user={session.user} onLogout={session.clear} />;
+}
+
+const styles = {
+  pageCenter: { minHeight: "100vh", display: "grid", placeItems: "center", background: "#0f172a", padding: 24, color: "#e2e8f0" },
+  page: { minHeight: "100vh", background: "#0f172a", padding: 24, color: "#e2e8f0" },
+  card: { width: "min(460px, 100%)", background: "#111827", borderRadius: 16, padding: 24, boxShadow: "0 20px 50px rgba(0,0,0,.25)" },
+  panel: { background: "#111827", borderRadius: 16, padding: 20, display: "grid", gap: 16 },
+  title: { marginTop: 0, marginBottom: 16 },
+  input: { width: "100%", padding: 12, borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", boxSizing: "border-box" },
+  textarea: { width: "100%", minHeight: 100, padding: 12, borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", boxSizing: "border-box" },
+  primaryButton: { padding: "12px 16px", borderRadius: 10, border: 0, background: "#f59e0b", color: "#111827", fontWeight: 700, cursor: "pointer" },
+  secondaryButton: { padding: "10px 14px", borderRadius: 10, border: "1px solid #475569", background: "#1e293b", color: "#e2e8f0", cursor: "pointer" },
+  linkButton: { background: "transparent", border: 0, color: "#f59e0b", cursor: "pointer", padding: 0 },
+  linkDanger: { background: "transparent", border: 0, color: "#f87171", cursor: "pointer", padding: 0, justifySelf: "start" },
+  segmented: { display: "flex", gap: 8, marginBottom: 16 },
+  segment: { flex: 1, padding: 10, borderRadius: 999, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", cursor: "pointer" },
+  segmentActive: { flex: 1, padding: 10, borderRadius: 999, border: "1px solid #f59e0b", background: "#f59e0b", color: "#111827", cursor: "pointer", fontWeight: 700 },
+  columns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  section: { display: "grid", gap: 12, padding: 16, borderRadius: 12, background: "#0b1220" },
+  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
+  rowCard: { display: "grid", gap: 10, padding: 12, borderRadius: 12, background: "#111827", border: "1px solid #1f2937" },
+  listItem: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, padding: 12, borderRadius: 12, background: "#0b1220", cursor: "pointer" },
+  grid2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
+  totalBox: { padding: 14, borderRadius: 12, background: "#0b1220", fontWeight: 700 },
+  muted: { color: "#94a3b8", fontSize: 14 },
+  error: { color: "#fecaca", background: "#7f1d1d", padding: 12, borderRadius: 10 },
+  success: { color: "#dcfce7", background: "#14532d", padding: 12, borderRadius: 10, marginBottom: 16 },
+  codeBox: { background: "#020617", padding: 12, borderRadius: 12, overflowX: "auto", fontSize: 12 },
+};
