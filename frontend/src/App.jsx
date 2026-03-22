@@ -1,6 +1,104 @@
 import { useEffect, useMemo, useState } from "react";
+import "./app.css";
 
 const API_URL = "";
+
+const VOUCHER_FIELDS = [
+  { keyQty: "bcr_qty", keyAmount: "bcr_monto", label: "BCR", accent: "#ff9f1a" },
+  { keyQty: "bac_qty", keyAmount: "bac_monto", label: "BAC", accent: "#0f766e" },
+  { keyQty: "bac_flotas_qty", keyAmount: "bac_flotas_monto", label: "BAC flotas", accent: "#2f6fed" },
+  { keyQty: "versatec_qty", keyAmount: "versatec_monto", label: "Versatec", accent: "#d94b4b" },
+  { keyQty: "fleet_bncr_qty", keyAmount: "fleet_bncr_monto", label: "Fleet BNCR", accent: "#6c63ff" },
+  { keyQty: "fleet_dav_qty", keyAmount: "fleet_dav_monto", label: "Fleet DAV", accent: "#0ea5a4" },
+  { keyQty: "bncr_qty", keyAmount: "bncr_monto", label: "BNCR", accent: "#475569" },
+];
+
+const MOVEMENT_SECTIONS = [
+  {
+    key: "creditos",
+    index: "03",
+    title: "Creditos",
+    subtitle: "Registra cada credito por separado para facilitar auditoria y seguimiento.",
+    accent: "#6c63ff",
+    addLabel: "Agregar credito",
+    fields: [
+      { key: "descripcion", label: "Detalle", placeholder: "ej. venta a credito", span: 2 },
+      { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
+      { key: "referencia", label: "Referencia", placeholder: "Factura, placa o nota" },
+      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
+    ],
+  },
+  {
+    key: "sinpes",
+    index: "04",
+    title: "SINPE movil",
+    subtitle: "Anota la descripcion y el comprobante para conciliacion documental.",
+    accent: "#0f9d76",
+    addLabel: "Agregar SINPE",
+    fields: [
+      { key: "descripcion", label: "Detalle", placeholder: "ej. SINPE cliente", span: 2 },
+      { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
+      { key: "referencia", label: "Comprobante", placeholder: "Numero o referencia" },
+      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
+    ],
+  },
+  {
+    key: "transferencias",
+    index: "05",
+    title: "Transferencias",
+    subtitle: "Usa esta seccion para movimientos bancarios distintos a SINPE movil.",
+    accent: "#2f6fed",
+    addLabel: "Agregar transferencia",
+    fields: [
+      { key: "descripcion", label: "Detalle", placeholder: "ej. transferencia bancaria", span: 2 },
+      { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
+      { key: "referencia", label: "Referencia", placeholder: "Banco o comprobante" },
+      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
+    ],
+  },
+  {
+    key: "vales",
+    index: "06",
+    title: "Vales",
+    subtitle: "Controla salidas sin cobro inmediato para mantener la caja clara.",
+    accent: "#d97706",
+    addLabel: "Agregar vale",
+    fields: [
+      { key: "descripcion", label: "Detalle", placeholder: "ej. combustible interno", span: 2 },
+      { key: "cliente", label: "Beneficiario", placeholder: "Persona o cuenta" },
+      { key: "referencia", label: "Referencia", placeholder: "Placa, finca o nota" },
+      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
+    ],
+  },
+  {
+    key: "pagos",
+    index: "07",
+    title: "Pagos realizados",
+    subtitle: "Documenta pagos hechos desde caja para que queden visibles en el total.",
+    accent: "#d94b4b",
+    addLabel: "Agregar pago",
+    fields: [
+      { key: "descripcion", label: "Detalle", placeholder: "ej. pago de proveedor", span: 2 },
+      { key: "cliente", label: "A quien", placeholder: "Nombre o empresa" },
+      { key: "referencia", label: "Referencia", placeholder: "Motivo o comprobante" },
+      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
+    ],
+  },
+];
+
+const REVIEW_STATUS_OPTIONS = [
+  { value: "document_reviewed", label: "Revision documental" },
+  { value: "observed", label: "Observado" },
+  { value: "approved", label: "Aprobado" },
+];
+
+const STATUS_META = {
+  draft: { label: "Borrador", tone: "slate" },
+  submitted: { label: "Enviado", tone: "amber" },
+  observed: { label: "Observado", tone: "rose" },
+  document_reviewed: { label: "Revisado", tone: "teal" },
+  approved: { label: "Aprobado", tone: "emerald" },
+};
 
 async function api(path, options = {}, token = null) {
   const headers = { ...(options.headers || {}) };
@@ -8,14 +106,58 @@ async function api(path, options = {}, token = null) {
     headers["Content-Type"] = headers["Content-Type"] || "application/json";
   }
   if (token) headers.Authorization = `Bearer ${token}`;
-  const res = await fetch(`${API_URL}${path}`, { ...options, headers });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err.detail || "Error del servidor");
+
+  const response = await fetch(`${API_URL}${path}`, { ...options, headers });
+  if (!response.ok) {
+    const errorPayload = await response.json().catch(() => ({}));
+    throw new Error(errorPayload.detail || "Error del servidor");
   }
-  const contentType = res.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) return res.json();
-  return res;
+
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) return response.json();
+  return response;
+}
+
+function cx(...classes) {
+  return classes.filter(Boolean).join(" ");
+}
+
+function parseAmount(value) {
+  if (value === null || value === undefined || value === "") return 0;
+  const normalized = String(value).replace(/,/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function money(value) {
+  return new Intl.NumberFormat("es-CR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(parseAmount(value));
+}
+
+function formatDateLabel(value) {
+  if (!value) return "Sin fecha";
+  const date = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-CR", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatDateTimeLabel(value) {
+  if (!value) return "Sin registro";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat("es-CR", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
 function emptyMovement() {
@@ -36,13 +178,20 @@ function emptyForm(defaultTurno = "1") {
     turno: defaultTurno || "1",
     datafono: "",
     vouchers: {
-      bcr_qty: "", bcr_monto: "",
-      bac_qty: "", bac_monto: "",
-      bac_flotas_qty: "", bac_flotas_monto: "",
-      versatec_qty: "", versatec_monto: "",
-      fleet_bncr_qty: "", fleet_bncr_monto: "",
-      fleet_dav_qty: "", fleet_dav_monto: "",
-      bncr_qty: "", bncr_monto: "",
+      bcr_qty: "",
+      bcr_monto: "",
+      bac_qty: "",
+      bac_monto: "",
+      bac_flotas_qty: "",
+      bac_flotas_monto: "",
+      versatec_qty: "",
+      versatec_monto: "",
+      fleet_bncr_qty: "",
+      fleet_bncr_monto: "",
+      fleet_dav_qty: "",
+      fleet_dav_monto: "",
+      bncr_qty: "",
+      bncr_monto: "",
     },
     creditos: [],
     sinpes: [],
@@ -52,28 +201,518 @@ function emptyForm(defaultTurno = "1") {
     pagos: [],
     efectivo: "",
     observaciones: "",
+    employee_id: null,
   };
 }
 
-function money(n) {
-  return Number(n || 0).toLocaleString("es-CR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function summarizePayload(payload) {
+  const vouchers = VOUCHER_FIELDS.reduce(
+    (total, voucher) => total + parseAmount(payload?.vouchers?.[voucher.keyAmount]),
+    0,
+  );
+  const sumItems = (items) => (items || []).reduce((acc, item) => acc + parseAmount(item.monto_reportado), 0);
+
+  const totalCreditos = sumItems(payload?.creditos);
+  const totalSinpes = sumItems(payload?.sinpes);
+  const totalTransferencias = sumItems(payload?.transferencias);
+  const totalVales = sumItems(payload?.vales);
+  const totalPagos = sumItems(payload?.pagos);
+  const deposito = parseAmount(payload?.deposito);
+  const efectivo = parseAmount(payload?.efectivo);
+
+  return {
+    totalVouchers: vouchers,
+    totalCreditos,
+    totalSinpes,
+    totalTransferencias,
+    totalVales,
+    totalPagos,
+    deposito,
+    efectivo,
+    totalReportado:
+      vouchers +
+      totalCreditos +
+      totalSinpes +
+      totalTransferencias +
+      deposito +
+      efectivo -
+      totalVales -
+      totalPagos,
+  };
+}
+
+function normalizeSummary(summary) {
+  if (!summary) return null;
+  return {
+    totalVouchers: parseAmount(summary.totalVouchers ?? summary.total_vouchers),
+    totalCreditos: parseAmount(summary.totalCreditos ?? summary.total_creditos),
+    totalSinpes: parseAmount(summary.totalSinpes ?? summary.total_sinpes),
+    totalTransferencias: parseAmount(summary.totalTransferencias ?? summary.total_transferencias),
+    totalVales: parseAmount(summary.totalVales ?? summary.total_vales),
+    totalPagos: parseAmount(summary.totalPagos ?? summary.total_pagos),
+    deposito: parseAmount(summary.deposito),
+    efectivo: parseAmount(summary.efectivo),
+    totalReportado: parseAmount(summary.totalReportado ?? summary.total_reportado),
+  };
+}
+
+function voucherSnapshot(vouchers = {}) {
+  return VOUCHER_FIELDS.map((field) => ({
+    label: field.label,
+    qty: parseAmount(vouchers[field.keyQty]),
+    amount: parseAmount(vouchers[field.keyAmount]),
+  })).filter((item) => item.qty > 0 || item.amount > 0);
 }
 
 function useSession() {
-  const [token, setToken] = useState(localStorage.getItem("cierre_token") || "");
+  const [token, setToken] = useState(() => localStorage.getItem("cierre_token") || "");
   const [user, setUser] = useState(() => {
-    const raw = localStorage.getItem("cierre_user");
-    return raw ? JSON.parse(raw) : null;
+    try {
+      const raw = localStorage.getItem("cierre_user");
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
   });
 
   const save = (nextToken, nextUser) => {
     setToken(nextToken);
     setUser(nextUser);
-    if (nextToken) localStorage.setItem("cierre_token", nextToken); else localStorage.removeItem("cierre_token");
-    if (nextUser) localStorage.setItem("cierre_user", JSON.stringify(nextUser)); else localStorage.removeItem("cierre_user");
+    if (nextToken) localStorage.setItem("cierre_token", nextToken);
+    else localStorage.removeItem("cierre_token");
+    if (nextUser) localStorage.setItem("cierre_user", JSON.stringify(nextUser));
+    else localStorage.removeItem("cierre_user");
   };
 
   return { token, user, save, clear: () => save("", null) };
+}
+
+function Banner({ tone = "success", children }) {
+  return <div className={cx("banner", `banner-${tone}`)}>{children}</div>;
+}
+
+function StatusPill({ status }) {
+  const meta = STATUS_META[status] || { label: status || "Sin estado", tone: "slate" };
+  return <span className={cx("status-pill", `tone-${meta.tone}`)}>{meta.label}</span>;
+}
+
+function Panel({ eyebrow, title, subtitle, accent = "#ff9f1a", action, className, children }) {
+  return (
+    <section className={cx("surface-panel", className)} style={{ "--panel-accent": accent }}>
+      {(eyebrow || title || subtitle || action) && (
+        <div className="panel-head">
+          <div>
+            {eyebrow ? <div className="eyebrow">{eyebrow}</div> : null}
+            {title ? <h2 className="panel-title">{title}</h2> : null}
+            {subtitle ? <p className="panel-subtitle">{subtitle}</p> : null}
+          </div>
+          {action ? <div className="panel-action">{action}</div> : null}
+        </div>
+      )}
+      {children}
+    </section>
+  );
+}
+
+function FormSection({ index, title, subtitle, accent = "#ff9f1a", extra, children }) {
+  return (
+    <section className="form-section" style={{ "--section-accent": accent }}>
+      <div className="form-section-head">
+        <div className="section-index">{index}</div>
+        <div className="form-section-copy">
+          <h3>{title}</h3>
+          <p>{subtitle}</p>
+        </div>
+        {extra ? <div className="form-section-extra">{extra}</div> : null}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function MetricCard({ label, value, caption, accent = "#ff9f1a" }) {
+  return (
+    <div className="metric-card" style={{ "--metric-accent": accent }}>
+      <span className="metric-label">{label}</span>
+      <strong className="metric-value">{value}</strong>
+      {caption ? <span className="metric-caption">{caption}</span> : null}
+    </div>
+  );
+}
+
+function FieldShell({ label, hint, children }) {
+  return (
+    <label className="field-shell">
+      <span className="field-label">{label}</span>
+      {hint ? <span className="field-hint">{hint}</span> : null}
+      {children}
+    </label>
+  );
+}
+
+function TextField({ label, hint, value, onChange, placeholder = "", type = "text" }) {
+  return (
+    <FieldShell label={label} hint={hint}>
+      <input
+        className="field-input"
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+    </FieldShell>
+  );
+}
+
+function MoneyField({ label, hint, value, onChange, placeholder = "0.00" }) {
+  return (
+    <FieldShell label={label} hint={hint}>
+      <div className="money-input">
+        <span className="money-prefix">CRC</span>
+        <input
+          className="field-input field-input-plain"
+          type="text"
+          inputMode="decimal"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={placeholder}
+        />
+      </div>
+    </FieldShell>
+  );
+}
+
+function SelectField({ label, hint, value, onChange, children }) {
+  return (
+    <FieldShell label={label} hint={hint}>
+      <select className="field-input" value={value} onChange={(event) => onChange(event.target.value)}>
+        {children}
+      </select>
+    </FieldShell>
+  );
+}
+
+function TextAreaField({ label, hint, value, onChange, placeholder = "" }) {
+  return (
+    <FieldShell label={label} hint={hint}>
+      <textarea
+        className="field-input field-textarea"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+      />
+    </FieldShell>
+  );
+}
+
+function EmptyState({ title, body }) {
+  return (
+    <div className="empty-state">
+      <strong>{title}</strong>
+      <p>{body}</p>
+    </div>
+  );
+}
+
+function SummaryBoard({ payload, summary, compact = false }) {
+  const totals = normalizeSummary(summary) || summarizePayload(payload || emptyForm());
+  const rows = [
+    { label: "Vouchers", value: totals.totalVouchers, tone: "amber" },
+    { label: "Creditos", value: totals.totalCreditos, tone: "indigo" },
+    { label: "SINPE movil", value: totals.totalSinpes, tone: "emerald" },
+    { label: "Transferencias", value: totals.totalTransferencias, tone: "sky" },
+    { label: "Deposito", value: totals.deposito, tone: "navy" },
+    { label: "Efectivo", value: totals.efectivo, tone: "teal" },
+    { label: "Vales", value: totals.totalVales, tone: "rust", negative: true },
+    { label: "Pagos", value: totals.totalPagos, tone: "rose", negative: true },
+  ];
+
+  return (
+    <div className={cx("summary-board", compact && "summary-board-compact")}>
+      <div className="summary-list">
+        {rows.map((row) => (
+          <div key={row.label} className="summary-row">
+            <div className="summary-row-copy">
+              <span className={cx("summary-dot", `summary-${row.tone}`)} />
+              <span>{row.label}</span>
+            </div>
+            <strong className={cx("summary-row-value", row.negative && row.value > 0 && "summary-negative")}>
+              {row.negative && row.value > 0 ? "-" : ""}
+              CRC {money(row.value)}
+            </strong>
+          </div>
+        ))}
+      </div>
+      <div className="summary-total">
+        <span>Total reportado</span>
+        <strong>CRC {money(totals.totalReportado)}</strong>
+      </div>
+    </div>
+  );
+}
+
+function VoucherGrid({ vouchers, setVoucher }) {
+  const totalVouchers = VOUCHER_FIELDS.reduce(
+    (total, voucher) => total + parseAmount(vouchers[voucher.keyAmount]),
+    0,
+  );
+
+  return (
+    <>
+      <div className="voucher-grid">
+        {VOUCHER_FIELDS.map((voucher) => (
+          <div className="voucher-card" key={voucher.keyAmount} style={{ "--voucher-accent": voucher.accent }}>
+            <div className="voucher-card-head">
+              <strong>{voucher.label}</strong>
+              <span>Monto y cantidad</span>
+            </div>
+            <div className="voucher-card-fields">
+              <TextField
+                label="Cantidad"
+                value={vouchers[voucher.keyQty] || ""}
+                onChange={(value) => setVoucher(voucher.keyQty, value)}
+                placeholder="0"
+              />
+              <MoneyField
+                label="Monto"
+                value={vouchers[voucher.keyAmount] || ""}
+                onChange={(value) => setVoucher(voucher.keyAmount, value)}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="inline-total">
+        <span>Subtotal vouchers</span>
+        <strong>CRC {money(totalVouchers)}</strong>
+      </div>
+    </>
+  );
+}
+
+function MovementListEditor({ config, items, setItems }) {
+  const subtotal = useMemo(
+    () => (items || []).reduce((acc, item) => acc + parseAmount(item.monto_reportado), 0),
+    [items],
+  );
+
+  const updateItem = (index, key, value) => {
+    setItems(items.map((item, itemIndex) => (itemIndex === index ? { ...item, [key]: value } : item)));
+  };
+
+  const removeItem = (index) => {
+    setItems(items.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  const addItem = () => {
+    setItems([...(items || []), emptyMovement()]);
+  };
+
+  return (
+    <FormSection
+      index={config.index}
+      title={config.title}
+      subtitle={config.subtitle}
+      accent={config.accent}
+      extra={<span className="section-chip">{items.length} registros</span>}
+    >
+      {items.length === 0 ? (
+        <EmptyState
+          title={`Sin ${config.title.toLowerCase()}`}
+          body="Puedes dejar la seccion vacia o agregar movimientos conforme aparezcan."
+        />
+      ) : (
+        <div className="movement-stack">
+          {items.map((item, index) => (
+            <div className="movement-card" key={item.id || index}>
+              <div className="movement-card-head">
+                <div>
+                  <strong>{config.title} #{index + 1}</strong>
+                  <span>Completa el detalle y el monto reportado.</span>
+                </div>
+                <button className="btn btn-ghost-danger" type="button" onClick={() => removeItem(index)}>
+                  Quitar
+                </button>
+              </div>
+              <div className="movement-grid">
+                {config.fields.map((field) => (
+                  <div className={cx("movement-field", field.span === 2 && "movement-field-span-2")} key={field.key}>
+                    {field.kind === "money" ? (
+                      <MoneyField
+                        label={field.label}
+                        value={item[field.key] || ""}
+                        onChange={(value) => updateItem(index, field.key, value)}
+                      />
+                    ) : (
+                      <TextField
+                        label={field.label}
+                        value={item[field.key] || ""}
+                        onChange={(value) => updateItem(index, field.key, value)}
+                        placeholder={field.placeholder}
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="section-actions">
+        <button className="btn btn-secondary" type="button" onClick={addItem}>
+          {config.addLabel}
+        </button>
+        <div className="inline-total inline-total-muted">
+          <span>Subtotal</span>
+          <strong>CRC {money(subtotal)}</strong>
+        </div>
+      </div>
+    </FormSection>
+  );
+}
+
+function DetailList({ title, accent = "#ff9f1a", items }) {
+  if (!items.length) return null;
+
+  return (
+    <div className="detail-card" style={{ "--detail-accent": accent }}>
+      <div className="detail-card-head">
+        <strong>{title}</strong>
+        <span>{items.length} registros</span>
+      </div>
+      <div className="detail-list">
+        {items.map((item, index) => (
+          <div className="detail-row" key={item.id || `${title}-${index}`}>
+            <div>
+              <strong>{item.title}</strong>
+              {item.meta ? <span>{item.meta}</span> : null}
+            </div>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes }) {
+  if (!payload) {
+    return <EmptyState title="Sin detalle disponible" body="Selecciona un cierre para ver su resumen." />;
+  }
+
+  const vouchers = voucherSnapshot(payload.vouchers).map((item) => ({
+    title: item.label,
+    meta: item.qty > 0 ? `${item.qty} movimientos` : "Sin cantidad reportada",
+    value: `CRC ${money(item.amount)}`,
+  }));
+
+  const movementGroups = [
+    { title: "Creditos", accent: "#6c63ff", items: payload.creditos || [] },
+    { title: "SINPE movil", accent: "#0f9d76", items: payload.sinpes || [] },
+    { title: "Transferencias", accent: "#2f6fed", items: payload.transferencias || [] },
+    { title: "Vales", accent: "#d97706", items: payload.vales || [] },
+    { title: "Pagos", accent: "#d94b4b", items: payload.pagos || [] },
+  ]
+    .map((group) => ({
+      ...group,
+      items: group.items.map((item, index) => ({
+        id: item.id || `${group.title}-${index}`,
+        title: item.descripcion || item.cliente || `${group.title} ${index + 1}`,
+        meta: [item.cliente, item.referencia].filter(Boolean).join(" / ") || "Sin detalle adicional",
+        value: `CRC ${money(item.monto_reportado)}`,
+      })),
+    }))
+    .filter((group) => group.items.length > 0);
+
+  const reportado = normalizeSummary(reportadoSummary) || summarizePayload(payload);
+  const validado = normalizeSummary(validadoSummary) || reportado;
+  const delta = validado.totalReportado - reportado.totalReportado;
+
+  return (
+    <div className="snapshot-stack">
+      <div className="metric-grid metric-grid-tight">
+        <MetricCard
+          label="Reportado"
+          value={`CRC ${money(reportado.totalReportado)}`}
+          caption={`Fecha ${formatDateLabel(payload.fecha)}`}
+          accent="#ff9f1a"
+        />
+        <MetricCard
+          label="Validado"
+          value={`CRC ${money(validado.totalReportado)}`}
+          caption={`Turno ${payload.turno || "Sin turno"}`}
+          accent="#0f9d76"
+        />
+        <MetricCard
+          label="Diferencia"
+          value={`CRC ${money(delta)}`}
+          caption={payload.datafono ? `Datafono ${payload.datafono}` : "Sin datafono"}
+          accent={delta === 0 ? "#13315c" : "#d94b4b"}
+        />
+      </div>
+
+      <SummaryBoard payload={payload} summary={reportadoSummary} compact />
+
+      <div className="detail-grid">
+        <DetailList title="Vouchers" accent="#ff9f1a" items={vouchers} />
+        {movementGroups.map((group) => (
+          <DetailList key={group.title} title={group.title} accent={group.accent} items={group.items} />
+        ))}
+      </div>
+
+      {payload.observaciones ? (
+        <div className="note-card">
+          <strong>Observaciones del empleado</strong>
+          <p>{payload.observaciones}</p>
+        </div>
+      ) : null}
+
+      {auditNotes ? (
+        <div className="note-card note-card-alt">
+          <strong>Notas de revision</strong>
+          <p>{auditNotes}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function AppShell({ user, title, subtitle, onLogout, children }) {
+  return (
+    <div className="app-shell">
+      <div className="ambient ambient-a" />
+      <div className="ambient ambient-b" />
+      <div className="ambient ambient-c" />
+
+      <div className="shell-frame">
+        <header className="shell-topbar">
+          <div className="brand-lockup">
+            <div className="brand-mark">LM</div>
+            <div>
+              <div className="brand-kicker">Servicentro La Marina</div>
+              <div className="brand-title">Cierre central</div>
+            </div>
+          </div>
+
+          <div className="shell-copy">
+            <div className="eyebrow">{title}</div>
+            <h1>{user.full_name}</h1>
+            <p>{subtitle}</p>
+          </div>
+
+          <div className="shell-user-card">
+            <span className="user-role">{user.role}</span>
+            <button className="btn btn-secondary" type="button" onClick={onLogout}>
+              Cerrar sesion
+            </button>
+          </div>
+        </header>
+
+        {children}
+      </div>
+    </div>
+  );
 }
 
 function LoginScreen({ onLogin }) {
@@ -84,10 +723,11 @@ function LoginScreen({ onLogin }) {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
-  const submit = async (e) => {
-    e.preventDefault();
+  const submit = async (event) => {
+    event.preventDefault();
     setLoading(true);
     setError("");
+
     try {
       const payload = mode === "employee" ? { pin } : { username, password };
       const data = await api("/api/auth/login", { method: "POST", body: JSON.stringify(payload) });
@@ -100,273 +740,673 @@ function LoginScreen({ onLogin }) {
   };
 
   return (
-    <div style={styles.pageCenter}>
-      <div style={styles.card}>
-        <h1 style={styles.title}>Cierre de Caja</h1>
-        <div style={styles.segmented}>
-          <button style={mode === "employee" ? styles.segmentActive : styles.segment} onClick={() => setMode("employee")}>Empleado</button>
-          <button style={mode === "staff" ? styles.segmentActive : styles.segment} onClick={() => setMode("staff")}>Supervisor / Admin</button>
-        </div>
-        <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
-          {mode === "employee" ? (
-            <input value={pin} onChange={(e) => setPin(e.target.value)} placeholder="PIN de empleado" style={styles.input} />
-          ) : (
-            <>
-              <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Usuario" style={styles.input} />
-              <input value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Contraseña" type="password" style={styles.input} />
-            </>
-          )}
-          {error && <div style={styles.error}>{error}</div>}
-          <button disabled={loading} style={styles.primaryButton}>{loading ? "Entrando..." : "Entrar"}</button>
-        </form>
-      </div>
-    </div>
-  );
-}
+    <div className="auth-shell">
+      <div className="ambient ambient-a" />
+      <div className="ambient ambient-b" />
 
-function DynamicList({ title, items, setItems }) {
-  const update = (idx, key, value) => setItems(items.map((item, i) => i === idx ? { ...item, [key]: value } : item));
-  const remove = (idx) => setItems(items.filter((_, i) => i !== idx));
-  return (
-    <div style={styles.section}>
-      <div style={styles.sectionHeader}>
-        <strong>{title}</strong>
-        <button type="button" style={styles.secondaryButton} onClick={() => setItems([...items, emptyMovement()])}>+ Agregar</button>
-      </div>
-      {items.length === 0 && <div style={styles.muted}>Sin registros.</div>}
-      {items.map((item, idx) => (
-        <div key={item.id || idx} style={styles.rowCard}>
-          <div style={styles.grid2}>
-            <input style={styles.input} value={item.descripcion || ""} onChange={(e) => update(idx, "descripcion", e.target.value)} placeholder="Descripción" />
-            <input style={styles.input} value={item.cliente || ""} onChange={(e) => update(idx, "cliente", e.target.value)} placeholder="Cliente" />
-            <input style={styles.input} value={item.referencia || ""} onChange={(e) => update(idx, "referencia", e.target.value)} placeholder="Referencia" />
-            <input style={styles.input} value={item.monto_reportado || ""} onChange={(e) => update(idx, "monto_reportado", e.target.value)} placeholder="Monto" />
+      <div className="auth-grid">
+        <section className="auth-brand">
+          <div className="eyebrow">Operacion de cierres</div>
+          <h1>Un panel mas claro para registrar, revisar y conciliar cada turno.</h1>
+          <p>
+            La app concentra captura operativa, revision documental y cruces de Gaspro con una experiencia
+            pensada para usar en celular o en escritorio sin perder contexto.
+          </p>
+
+          <div className="auth-metric-grid">
+            <MetricCard label="Captura" value="7 bloques" caption="Vouchers, movimientos, caja y observaciones" accent="#ff9f1a" />
+            <MetricCard label="Revision" value="Roles" caption="Empleado, supervisor y admin en la misma base" accent="#0f766e" />
+            <MetricCard label="Salida" value="Railway" caption="Lista para produccion con frontend y API unificados" accent="#2f6fed" />
           </div>
-          <button type="button" style={styles.linkDanger} onClick={() => remove(idx)}>Eliminar</button>
-        </div>
-      ))}
+
+          <div className="feature-list">
+            <div className="feature-item">
+              <strong>Operacion diaria</strong>
+              <span>Captura de cierres con lectura inmediata del total reportado.</span>
+            </div>
+            <div className="feature-item">
+              <strong>Control documental</strong>
+              <span>Revision por estado con notas claras para el equipo de supervision.</span>
+            </div>
+            <div className="feature-item">
+              <strong>Conciliacion</strong>
+              <span>Importacion de Gaspro y consulta de historial en una sola vista.</span>
+            </div>
+          </div>
+        </section>
+
+        <section className="auth-card">
+          <div className="eyebrow">Acceso</div>
+          <h2>Entra a tu panel</h2>
+          <p>Selecciona el tipo de acceso y usa las credenciales correspondientes.</p>
+
+          <div className="segmented-control">
+            <button className={cx("segmented-button", mode === "employee" && "is-active")} type="button" onClick={() => setMode("employee")}>
+              Empleado
+            </button>
+            <button className={cx("segmented-button", mode === "staff" && "is-active")} type="button" onClick={() => setMode("staff")}>
+              Supervisor o admin
+            </button>
+          </div>
+
+          <form className="auth-form" onSubmit={submit}>
+            {mode === "employee" ? (
+              <>
+                <FieldShell label="PIN del empleado" hint="Ingresa el codigo de 4 digitos.">
+                  <input
+                    className="field-input pin-input"
+                    type="password"
+                    inputMode="numeric"
+                    maxLength={4}
+                    value={pin}
+                    onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 4))}
+                    placeholder="0000"
+                  />
+                </FieldShell>
+                <div className="hint-card">El acceso de empleados se resuelve por PIN y abre directamente el panel de captura.</div>
+              </>
+            ) : (
+              <>
+                <TextField label="Usuario" value={username} onChange={setUsername} placeholder="supervisor" />
+                <TextField label="Contrasena" type="password" value={password} onChange={setPassword} placeholder="Ingresa tu contrasena" />
+              </>
+            )}
+
+            {error ? <Banner tone="error">{error}</Banner> : null}
+
+            <button className="btn btn-primary btn-block" type="submit" disabled={loading}>
+              {loading ? "Entrando..." : "Entrar al sistema"}
+            </button>
+          </form>
+        </section>
+      </div>
     </div>
   );
 }
 
-function CierreForm({ initial, onSave, employees = [], canChooseEmployee = false }) {
-  const [form, setForm] = useState(initial);
-  useEffect(() => setForm(initial), [initial]);
+function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee = false, defaultTurno = "1", editing = false }) {
+  const summary = useMemo(() => summarizePayload(form), [form]);
+  const movementCount = useMemo(
+    () =>
+      ["creditos", "sinpes", "transferencias", "vales", "pagos"].reduce(
+        (total, key) => total + (form[key] || []).length,
+        0,
+      ),
+    [form],
+  );
 
-  const setVoucher = (key, value) => setForm((prev) => ({ ...prev, vouchers: { ...prev.vouchers, [key]: value } }));
-  const total = useMemo(() => {
-    const voucherKeys = ["bcr_monto","bac_monto","bac_flotas_monto","versatec_monto","fleet_bncr_monto","fleet_dav_monto","bncr_monto"];
-    const vouchers = voucherKeys.reduce((acc, key) => acc + Number(form.vouchers[key] || 0), 0);
-    const listTotal = (arr) => arr.reduce((acc, item) => acc + Number(item.monto_reportado || 0), 0);
-    return vouchers + listTotal(form.creditos) + listTotal(form.sinpes) + listTotal(form.transferencias) + Number(form.deposito || 0) + Number(form.efectivo || 0) - listTotal(form.vales) - listTotal(form.pagos);
-  }, [form]);
+  const setVoucher = (key, value) => {
+    setForm((previous) => ({
+      ...previous,
+      vouchers: { ...previous.vouchers, [key]: value },
+    }));
+  };
 
-  const submit = (e) => {
-    e.preventDefault();
+  const submit = (event) => {
+    event.preventDefault();
     onSave(form);
   };
 
   return (
-    <form onSubmit={submit} style={{ display: "grid", gap: 16 }}>
-      <div style={styles.grid2}>
-        <input type="date" style={styles.input} value={form.fecha} onChange={(e) => setForm({ ...form, fecha: e.target.value })} />
-        <input style={styles.input} value={form.turno} onChange={(e) => setForm({ ...form, turno: e.target.value })} placeholder="Turno" />
-        <input style={styles.input} value={form.datafono} onChange={(e) => setForm({ ...form, datafono: e.target.value })} placeholder="Datafono" />
-        <input style={styles.input} value={form.efectivo} onChange={(e) => setForm({ ...form, efectivo: e.target.value })} placeholder="Efectivo" />
-        <input style={styles.input} value={form.deposito} onChange={(e) => setForm({ ...form, deposito: e.target.value })} placeholder="Depósito" />
-        {canChooseEmployee ? (
-          <select style={styles.input} value={form.employee_id || ""} onChange={(e) => setForm({ ...form, employee_id: Number(e.target.value) || null })}>
-            <option value="">Empleado</option>
-            {employees.map((employee) => <option key={employee.id} value={employee.id}>{employee.full_name}</option>)}
-          </select>
-        ) : null}
-      </div>
-      <div style={styles.section}>
-        <strong>Vouchers</strong>
-        <div style={styles.grid2}>
-          {[
-            ["bcr_monto", "BCR"], ["bac_monto", "BAC"], ["bac_flotas_monto", "BAC Flotas"],
-            ["versatec_monto", "Versatec"], ["fleet_bncr_monto", "Fleet BNCR"], ["fleet_dav_monto", "Fleet DAV"], ["bncr_monto", "BNCR"]
-          ].map(([key, label]) => (
-            <input key={key} style={styles.input} value={form.vouchers[key] || ""} onChange={(e) => setVoucher(key, e.target.value)} placeholder={label} />
-          ))}
+    <form className="form-stack" onSubmit={submit}>
+      <div className="form-hero">
+        <div>
+          <div className="eyebrow">Captura operativa</div>
+          <h3>{editing ? "Actualiza el cierre seleccionado" : "Completa la informacion del turno"}</h3>
+          <p>El formulario se guarda con el mismo formato que consume la API y mantiene el total visible.</p>
+        </div>
+        <div className="form-hero-card">
+          <span>Total reportado</span>
+          <strong>CRC {money(summary.totalReportado)}</strong>
+          <small>{movementCount} movimientos registrados</small>
         </div>
       </div>
-      <DynamicList title="Créditos" items={form.creditos} setItems={(creditos) => setForm({ ...form, creditos })} />
-      <DynamicList title="SINPE móvil" items={form.sinpes} setItems={(sinpes) => setForm({ ...form, sinpes })} />
-      <DynamicList title="Transferencias" items={form.transferencias} setItems={(transferencias) => setForm({ ...form, transferencias })} />
-      <DynamicList title="Vales" items={form.vales} setItems={(vales) => setForm({ ...form, vales })} />
-      <DynamicList title="Pagos" items={form.pagos} setItems={(pagos) => setForm({ ...form, pagos })} />
-      <textarea style={styles.textarea} value={form.observaciones} onChange={(e) => setForm({ ...form, observaciones: e.target.value })} placeholder="Observaciones" />
-      <div style={styles.totalBox}>Total reportado: ₡{money(total)}</div>
-      <button style={styles.primaryButton}>Guardar cierre</button>
+
+      <FormSection
+        index="01"
+        title="Contexto del turno"
+        subtitle="Fecha, turno, datafono y montos base para iniciar el cierre."
+        accent="#13315c"
+      >
+        <div className="field-grid field-grid-3">
+          <TextField label="Fecha" type="date" value={form.fecha} onChange={(value) => setForm({ ...form, fecha: value })} />
+          <TextField label="Turno" value={form.turno} onChange={(value) => setForm({ ...form, turno: value })} placeholder="Numero de turno" />
+          <TextField label="Datafono" value={form.datafono} onChange={(value) => setForm({ ...form, datafono: value })} placeholder="Codigo o referencia" />
+          <MoneyField label="Efectivo" value={form.efectivo} onChange={(value) => setForm({ ...form, efectivo: value })} />
+          <MoneyField label="Deposito" value={form.deposito} onChange={(value) => setForm({ ...form, deposito: value })} />
+          {canChooseEmployee ? (
+            <SelectField
+              label="Empleado"
+              value={form.employee_id || ""}
+              onChange={(value) => setForm({ ...form, employee_id: value ? Number(value) : null })}
+            >
+              <option value="">Selecciona un empleado</option>
+              {employees.map((employee) => (
+                <option key={employee.id} value={employee.id}>
+                  {employee.full_name}
+                </option>
+              ))}
+            </SelectField>
+          ) : (
+            <div className="context-card">
+              <span>Turno sugerido</span>
+              <strong>{form.turno || defaultTurno}</strong>
+              <small>Puedes ajustarlo si el cierre corresponde a otra jornada.</small>
+            </div>
+          )}
+        </div>
+      </FormSection>
+
+      <FormSection
+        index="02"
+        title="Vouchers y tarjetas"
+        subtitle="Registra cantidad y monto por procesador para una conciliacion mas precisa."
+        accent="#ff9f1a"
+      >
+        <VoucherGrid vouchers={form.vouchers} setVoucher={setVoucher} />
+      </FormSection>
+
+      {MOVEMENT_SECTIONS.map((section) => (
+        <MovementListEditor
+          key={section.key}
+          config={section}
+          items={form[section.key] || []}
+          setItems={(items) => setForm({ ...form, [section.key]: items })}
+        />
+      ))}
+
+      <FormSection
+        index="08"
+        title="Observaciones"
+        subtitle="Agrega contexto operativo, incidencias o notas para la revision."
+        accent="#475569"
+      >
+        <TextAreaField
+          label="Notas del cierre"
+          value={form.observaciones}
+          onChange={(value) => setForm({ ...form, observaciones: value })}
+          placeholder="Describe ajustes, faltantes, aclaraciones o contexto importante."
+        />
+      </FormSection>
+
+      <div className="form-submit-row">
+        <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyForm(defaultTurno))}>
+          Reiniciar formulario
+        </button>
+        <button className="btn btn-primary" type="submit">
+          {editing ? "Guardar cambios" : "Guardar cierre"}
+        </button>
+      </div>
     </form>
   );
 }
 
 function EmployeeDashboard({ token, user, onLogout }) {
   const [cierres, setCierres] = useState([]);
+  const [draft, setDraft] = useState(() => emptyForm(user.default_turno));
   const [editing, setEditing] = useState(null);
-  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState(null);
 
   const load = async () => {
-    const data = await api("/api/cierres", {}, token);
-    setCierres(data);
+    setLoading(true);
+    try {
+      const data = await api("/api/cierres", {}, token);
+      setCierres(data);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const startNew = () => {
+    setEditing(null);
+    setDraft(emptyForm(user.default_turno));
+    setMessage(null);
+  };
+
+  const startEdit = (cierre) => {
+    setEditing(cierre);
+    setDraft({
+      ...emptyForm(user.default_turno),
+      ...cierre.reportado_json,
+      employee_id: cierre.employee_id || null,
+    });
+    setMessage(null);
+  };
 
   const save = async (payload) => {
-    setMessage("");
-    if (editing?.id) {
-      await api(`/api/cierres/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) }, token);
-      setMessage("Cierre actualizado.");
-    } else {
-      await api("/api/cierres", { method: "POST", body: JSON.stringify(payload) }, token);
-      setMessage("Cierre creado.");
+    setMessage(null);
+    try {
+      if (editing?.id) {
+        await api(`/api/cierres/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) }, token);
+        setMessage({ tone: "success", text: "El cierre se actualizo correctamente." });
+      } else {
+        await api("/api/cierres", { method: "POST", body: JSON.stringify(payload) }, token);
+        setMessage({ tone: "success", text: "El cierre se guardo correctamente." });
+      }
+      setEditing(null);
+      setDraft(emptyForm(user.default_turno));
+      await load();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
     }
-    setEditing(null);
-    load();
   };
 
+  const summary = useMemo(() => summarizePayload(draft), [draft]);
+  const statusCounts = useMemo(
+    () =>
+      cierres.reduce(
+        (acc, cierre) => {
+          acc.total += 1;
+          if (cierre.status === "approved") acc.approved += 1;
+          if (["draft", "submitted", "observed", "document_reviewed"].includes(cierre.status)) acc.pending += 1;
+          return acc;
+        },
+        { total: 0, approved: 0, pending: 0 },
+      ),
+    [cierres],
+  );
+
   return (
-    <div style={styles.page}>
-      <Header user={user} onLogout={onLogout} title="Panel de empleado" />
-      {message && <div style={styles.success}>{message}</div>}
-      <div style={styles.columns}>
-        <div style={styles.panel}>
-          <h3>{editing ? "Editar cierre" : "Nuevo cierre"}</h3>
-          <CierreForm initial={editing?.reportado_json || emptyForm(user.default_turno)} onSave={save} />
-          {editing && <button style={styles.linkButton} onClick={() => setEditing(null)}>Cancelar edición</button>}
+    <AppShell
+      user={user}
+      title="Panel de empleado"
+      subtitle="Registra tu cierre con una vista clara del total y consulta tu historial inmediato."
+      onLogout={onLogout}
+    >
+      <div className="metric-grid">
+        <MetricCard label="Cierres registrados" value={statusCounts.total} caption="Historial del usuario actual" accent="#13315c" />
+        <MetricCard label="Pendientes" value={statusCounts.pending} caption="Borradores, enviados y revisiones activas" accent="#ff9f1a" />
+        <MetricCard label="Aprobados" value={statusCounts.approved} caption="Cierres finalizados" accent="#0f9d76" />
+        <MetricCard label="Total en captura" value={`CRC ${money(summary.totalReportado)}`} caption={`Turno ${draft.turno || user.default_turno || "-"}`} accent="#2f6fed" />
+      </div>
+
+      {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+
+      <div className="dashboard-grid">
+        <div className="stack">
+          <Panel
+            eyebrow="Formulario"
+            title={editing ? "Editar cierre" : "Nuevo cierre"}
+            subtitle="El total se recalcula en tiempo real a medida que completas cada bloque."
+            accent="#ff9f1a"
+            action={
+              <button className="btn btn-secondary" type="button" onClick={startNew}>
+                {editing ? "Cancelar edicion" : "Nuevo cierre"}
+              </button>
+            }
+          >
+            <CierreForm form={draft} setForm={setDraft} onSave={save} defaultTurno={user.default_turno || "1"} editing={Boolean(editing)} />
+          </Panel>
         </div>
-        <div style={styles.panel}>
-          <h3>Mis cierres</h3>
-          {cierres.map((cierre) => (
-            <div key={cierre.id} style={styles.listItem}>
-              <div>
-                <strong>{cierre.fecha}</strong> · turno {cierre.turno}<br />
-                <span style={styles.muted}>{cierre.status}</span>
+
+        <div className="stack">
+          <Panel eyebrow="Lectura rapida" title="Resumen del turno" subtitle="Revisa el balance antes de guardar." accent="#0f766e" className="sticky-panel">
+            <SummaryBoard payload={draft} summary={summary} />
+            <div className="mini-context-grid">
+              <div className="mini-context-card">
+                <span>Fecha</span>
+                <strong>{formatDateLabel(draft.fecha)}</strong>
               </div>
-              <div style={{ display: "grid", gap: 8 }}>
-                <span>₡{money(cierre.resumen_reportado?.total_reportado || 0)}</span>
-                {cierre.status === "submitted" || cierre.status === "observed" || cierre.status === "draft" ? (
-                  <button style={styles.secondaryButton} onClick={() => setEditing(cierre)}>Editar</button>
-                ) : null}
+              <div className="mini-context-card">
+                <span>Turno</span>
+                <strong>{draft.turno || user.default_turno || "-"}</strong>
+              </div>
+              <div className="mini-context-card">
+                <span>Datafono</span>
+                <strong>{draft.datafono || "Sin dato"}</strong>
               </div>
             </div>
-          ))}
+          </Panel>
+
+          <Panel
+            eyebrow="Historial"
+            title="Mis cierres"
+            subtitle="Selecciona un registro para editarlo mientras siga disponible."
+            accent="#13315c"
+            action={<button className="btn btn-ghost" type="button" onClick={load}>Actualizar</button>}
+          >
+            {loading ? (
+              <EmptyState title="Cargando cierres" body="Estamos consultando tu historial mas reciente." />
+            ) : cierres.length === 0 ? (
+              <EmptyState title="Sin cierres aun" body="Cuando guardes el primer cierre aparecera aqui." />
+            ) : (
+              <div className="history-list">
+                {cierres.map((cierre) => {
+                  const canEdit = ["draft", "submitted", "observed"].includes(cierre.status);
+                  return (
+                    <div className="history-card" key={cierre.id}>
+                      <div className="history-card-main">
+                        <div className="history-card-top">
+                          <strong>{formatDateLabel(cierre.fecha)}</strong>
+                          <StatusPill status={cierre.status} />
+                        </div>
+                        <p>
+                          Turno {cierre.turno || "-"}
+                          {cierre.audit_notes ? ` / ${cierre.audit_notes}` : ""}
+                        </p>
+                        <span className="history-total">CRC {money(cierre.resumen_reportado?.total_reportado)}</span>
+                      </div>
+                      {canEdit ? <button className="btn btn-secondary" type="button" onClick={() => startEdit(cierre)}>Editar</button> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
         </div>
       </div>
-    </div>
+    </AppShell>
   );
 }
 
-function ReviewPanel({ token, employees }) {
+function ReviewPanel({ token }) {
   const [cierres, setCierres] = useState([]);
-  const [selected, setSelected] = useState(null);
+  const [selectedId, setSelectedId] = useState(null);
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState("document_reviewed");
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
 
   const load = async () => {
-    const data = await api("/api/cierres", {}, token);
-    setCierres(data);
+    setLoading(true);
+    try {
+      const data = await api("/api/cierres", {}, token);
+      setCierres(data);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
   };
-  useEffect(() => { load(); }, []);
+
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const filtered = useMemo(
+    () =>
+      cierres.filter((cierre) => {
+        const matchesQuery =
+          !query ||
+          cierre.empleado?.toLowerCase().includes(query.toLowerCase()) ||
+          String(cierre.fecha).includes(query);
+        const matchesStatus = statusFilter === "all" || cierre.status === statusFilter;
+        return matchesQuery && matchesStatus;
+      }),
+    [cierres, query, statusFilter],
+  );
+
+  useEffect(() => {
+    if (!filtered.length) {
+      setSelectedId(null);
+      return;
+    }
+    if (!selectedId || !filtered.some((item) => item.id === selectedId)) {
+      setSelectedId(filtered[0].id);
+    }
+  }, [filtered, selectedId]);
+
+  const selected = useMemo(() => cierres.find((cierre) => cierre.id === selectedId) || null, [cierres, selectedId]);
+
+  useEffect(() => {
+    if (selected) {
+      setNotes(selected.audit_notes || "");
+      setStatus(selected.status || "document_reviewed");
+    }
+  }, [selected]);
 
   const submitReview = async () => {
-    await api(`/api/cierres/${selected.id}/review`, {
-      method: "POST",
-      body: JSON.stringify({ validado_json: selected.validado_json || selected.reportado_json, audit_notes: notes, status }),
-    }, token);
-    setSelected(null);
-    setNotes("");
-    load();
+    if (!selected) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api(
+        `/api/cierres/${selected.id}/review`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            validado_json: selected.validado_json || selected.reportado_json,
+            audit_notes: notes,
+            status,
+          }),
+        },
+        token,
+      );
+      setMessage({ tone: "success", text: "La revision se guardo correctamente." });
+      await load();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
-    <div style={styles.columns}>
-      <div style={styles.panel}>
-        <h3>Cierres para revisión</h3>
-        {cierres.map((cierre) => (
-          <div key={cierre.id} style={styles.listItem} onClick={() => { setSelected(cierre); setNotes(cierre.audit_notes || ""); setStatus(cierre.status || "document_reviewed"); }}>
-            <div>
-              <strong>{cierre.empleado}</strong><br />
-              <span style={styles.muted}>{cierre.fecha} · turno {cierre.turno}</span>
-            </div>
-            <div>{cierre.status}</div>
+    <div className="dashboard-grid">
+      <Panel
+        eyebrow="Bandeja"
+        title="Cierres para revision"
+        subtitle="Filtra por fecha, empleado o estado para encontrar el cierre que necesitas."
+        accent="#13315c"
+      >
+        <div className="toolbar-grid">
+          <TextField label="Buscar" value={query} onChange={setQuery} placeholder="Empleado o fecha" />
+          <SelectField label="Estado" value={statusFilter} onChange={setStatusFilter}>
+            <option value="all">Todos los estados</option>
+            {Object.entries(STATUS_META).map(([value, meta]) => (
+              <option key={value} value={value}>
+                {meta.label}
+              </option>
+            ))}
+          </SelectField>
+        </div>
+
+        {loading ? (
+          <EmptyState title="Consultando cierres" body="Estamos cargando la bandeja de revision." />
+        ) : filtered.length === 0 ? (
+          <EmptyState title="Sin coincidencias" body="Prueba con otro estado o cambia el texto de busqueda." />
+        ) : (
+          <div className="selectable-list">
+            {filtered.map((cierre) => (
+              <button
+                className={cx("selectable-card", selectedId === cierre.id && "is-active")}
+                key={cierre.id}
+                type="button"
+                onClick={() => setSelectedId(cierre.id)}
+              >
+                <div className="selectable-card-copy">
+                  <strong>{cierre.empleado}</strong>
+                  <span>{formatDateLabel(cierre.fecha)} / Turno {cierre.turno || "-"}</span>
+                </div>
+                <div className="selectable-card-meta">
+                  <StatusPill status={cierre.status} />
+                  <strong>CRC {money(cierre.resumen_reportado?.total_reportado)}</strong>
+                </div>
+              </button>
+            ))}
           </div>
-        ))}
-      </div>
-      <div style={styles.panel}>
+        )}
+      </Panel>
+
+      <Panel
+        eyebrow="Detalle"
+        title={selected ? selected.empleado : "Selecciona un cierre"}
+        subtitle={selected ? `Fecha ${formatDateLabel(selected.fecha)} / Turno ${selected.turno || "-"}` : "La vista de detalle aparece aqui."}
+        accent="#ff9f1a"
+      >
+        {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+
         {selected ? (
-          <>
-            <h3>Revisión de {selected.empleado}</h3>
-            <pre style={styles.codeBox}>{JSON.stringify(selected.reportado_json, null, 2)}</pre>
-            <textarea style={styles.textarea} value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Notas de auditoría" />
-            <select style={styles.input} value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="document_reviewed">Documental revisado</option>
-              <option value="observed">Observado</option>
-              <option value="approved">Aprobado</option>
-            </select>
-            <button style={styles.primaryButton} onClick={submitReview}>Guardar revisión</button>
-          </>
-        ) : <div style={styles.muted}>Selecciona un cierre.</div>}
-      </div>
+          <div className="stack">
+            <div className="detail-meta-row">
+              <StatusPill status={selected.status} />
+              <span className="meta-chip">Total reportado: CRC {money(selected.resumen_reportado?.total_reportado)}</span>
+              {selected.gaspro_mode ? <span className="meta-chip">Gaspro: {selected.gaspro_mode}</span> : null}
+            </div>
+
+            <CierreSnapshot
+              payload={selected.reportado_json}
+              reportadoSummary={selected.resumen_reportado}
+              validadoSummary={selected.resumen_validado}
+              auditNotes={selected.audit_notes}
+            />
+
+            <div className="review-form-grid">
+              <SelectField label="Nuevo estado" value={status} onChange={setStatus}>
+                {REVIEW_STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </SelectField>
+
+              <TextAreaField
+                label="Notas de revision"
+                value={notes}
+                onChange={setNotes}
+                placeholder="Anota hallazgos, observaciones o aclaraciones para el empleado."
+              />
+            </div>
+
+            <div className="form-submit-row">
+              <button className="btn btn-primary" type="button" onClick={submitReview} disabled={saving}>
+                {saving ? "Guardando..." : "Guardar revision"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <EmptyState title="Ningun cierre seleccionado" body="Elige un registro de la bandeja para revisar sus detalles." />
+        )}
+      </Panel>
     </div>
   );
 }
 
 function GasproPanel({ token }) {
+  const today = new Date().toISOString().slice(0, 10);
   const [imports, setImports] = useState([]);
   const [file, setFile] = useState(null);
   const [mode, setMode] = useState("general");
-  const [dateFrom, setDateFrom] = useState(new Date().toISOString().slice(0, 10));
-  const [dateTo, setDateTo] = useState(new Date().toISOString().slice(0, 10));
-  const [message, setMessage] = useState("");
+  const [dateFrom, setDateFrom] = useState(today);
+  const [dateTo, setDateTo] = useState(today);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [message, setMessage] = useState(null);
 
-  const load = async () => setImports(await api("/api/gaspro/imports", {}, token));
-  useEffect(() => { load(); }, []);
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await api("/api/gaspro/imports", {}, token);
+      setImports(data);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const submit = async (e) => {
-    e.preventDefault();
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!file) return;
+
     const form = new FormData();
     form.append("import_mode", mode);
     form.append("date_from", dateFrom);
     form.append("date_to", dateTo);
     form.append("file", file);
-    const data = await api("/api/gaspro/import", { method: "POST", body: form }, token);
-    setMessage(`Importación ${data.import_id} aplicada a ${data.matched_cierres} cierres.`);
-    setFile(null);
-    load();
+
+    setUploading(true);
+    setMessage(null);
+    try {
+      const data = await api("/api/gaspro/import", { method: "POST", body: form }, token);
+      setMessage({ tone: "success", text: `Importacion ${data.import_id} aplicada a ${data.matched_cierres} cierres.` });
+      setFile(null);
+      await load();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setUploading(false);
+    }
   };
 
   return (
-    <div style={styles.columns}>
-      <div style={styles.panel}>
-        <h3>Subir Gaspro</h3>
-        <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
-          <select style={styles.input} value={mode} onChange={(e) => setMode(e.target.value)}>
-            <option value="general">General</option>
-            <option value="detailed">Detallado</option>
-          </select>
-          <input type="date" style={styles.input} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} />
-          <input type="date" style={styles.input} value={dateTo} onChange={(e) => setDateTo(e.target.value)} />
-          <input type="file" style={styles.input} onChange={(e) => setFile(e.target.files?.[0] || null)} />
-          <button disabled={!file} style={styles.primaryButton}>Importar</button>
-        </form>
-        {message && <div style={styles.success}>{message}</div>}
-      </div>
-      <div style={styles.panel}>
-        <h3>Historial de importaciones</h3>
-        {imports.map((imp) => (
-          <div key={imp.id} style={styles.listItem}>
-            <div>
-              <strong>{imp.original_name}</strong><br />
-              <span style={styles.muted}>{imp.date_from} → {imp.date_to}</span>
-            </div>
-            <div>{imp.matched_cierres} cierres</div>
+    <div className="dashboard-grid">
+      <Panel
+        eyebrow="Carga"
+        title="Importar archivo de Gaspro"
+        subtitle="Sube el archivo general o detallado para cruzarlo contra los cierres ya registrados."
+        accent="#0f766e"
+      >
+        {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+
+        <form className="form-stack" onSubmit={submit}>
+          <div className="field-grid field-grid-3">
+            <SelectField label="Modo" value={mode} onChange={setMode}>
+              <option value="general">General</option>
+              <option value="detailed">Detallado</option>
+            </SelectField>
+            <TextField label="Desde" type="date" value={dateFrom} onChange={setDateFrom} />
+            <TextField label="Hasta" type="date" value={dateTo} onChange={setDateTo} />
           </div>
-        ))}
-      </div>
+
+          <label className="upload-card">
+            <input className="upload-input" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <span className="upload-kicker">Archivo fuente</span>
+            <strong>{file ? file.name : "Selecciona un CSV o XLSX para importar"}</strong>
+            <p>El archivo se procesa en el servidor y se cruza contra el rango de fechas elegido.</p>
+          </label>
+
+          <div className="form-submit-row">
+            <button className="btn btn-primary" type="submit" disabled={!file || uploading}>
+              {uploading ? "Importando..." : "Importar archivo"}
+            </button>
+          </div>
+        </form>
+      </Panel>
+
+      <Panel
+        eyebrow="Historial"
+        title="Importaciones recientes"
+        subtitle="Consulta que archivos se procesaron y cuantos cierres fueron conciliados."
+        accent="#13315c"
+        action={<button className="btn btn-ghost" type="button" onClick={load}>Actualizar</button>}
+      >
+        {loading ? (
+          <EmptyState title="Cargando historial" body="Estamos consultando las importaciones registradas." />
+        ) : imports.length === 0 ? (
+          <EmptyState title="Sin importaciones" body="Cuando subas el primer archivo de Gaspro aparecera aqui." />
+        ) : (
+          <div className="timeline-list">
+            {imports.map((item) => (
+              <div className="timeline-card" key={item.id}>
+                <div className="timeline-card-copy">
+                  <strong>{item.original_name}</strong>
+                  <span>{formatDateLabel(item.date_from)} / {formatDateLabel(item.date_to)}</span>
+                  <small>{formatDateTimeLabel(item.created_at)}</small>
+                </div>
+                <div className="timeline-card-meta">
+                  <span className="meta-chip">{item.import_mode}</span>
+                  <strong>{item.matched_cierres} cierres</strong>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
     </div>
   );
 }
@@ -374,66 +1414,50 @@ function GasproPanel({ token }) {
 function StaffDashboard({ token, user, onLogout }) {
   const [tab, setTab] = useState("review");
   const [employees, setEmployees] = useState([]);
-  useEffect(() => {
-    api("/api/users?role=employee", {}, token).then(setEmployees).catch(() => setEmployees([]));
-  }, []);
-  return (
-    <div style={styles.page}>
-      <Header user={user} onLogout={onLogout} title={`Panel ${user.role}`} />
-      <div style={styles.segmented}>
-        <button style={tab === "review" ? styles.segmentActive : styles.segment} onClick={() => setTab("review")}>Revisión</button>
-        <button style={tab === "gaspro" ? styles.segmentActive : styles.segment} onClick={() => setTab("gaspro")}>Gaspro</button>
-      </div>
-      {tab === "review" ? <ReviewPanel token={token} employees={employees} /> : <GasproPanel token={token} />}
-    </div>
-  );
-}
 
-function Header({ user, onLogout, title }) {
+  useEffect(() => {
+    api("/api/users?role=employee", {}, token)
+      .then((data) => setEmployees(data))
+      .catch(() => setEmployees([]));
+  }, [token]);
+
   return (
-    <div style={styles.header}>
-      <div>
-        <div style={styles.muted}>{title}</div>
-        <h2 style={{ margin: 0 }}>{user.full_name}</h2>
+    <AppShell
+      user={user}
+      title={user.role === "admin" ? "Centro de control" : "Panel de supervision"}
+      subtitle="Revisa cierres, deja observaciones y concilia archivos de Gaspro desde una misma consola."
+      onLogout={onLogout}
+    >
+      <div className="metric-grid">
+        <MetricCard label="Equipo activo" value={employees.length} caption="Usuarios con rol empleado" accent="#13315c" />
+        <MetricCard label="Vista actual" value={tab === "review" ? "Revision" : "Gaspro"} caption="Cambia entre control documental y conciliacion" accent="#ff9f1a" />
+        <MetricCard label="Rol" value={user.role} caption="Permisos cargados en esta sesion" accent="#0f766e" />
       </div>
-      <button style={styles.secondaryButton} onClick={onLogout}>Salir</button>
-    </div>
+
+      <div className="segmented-control segmented-control-inline">
+        <button className={cx("segmented-button", tab === "review" && "is-active")} type="button" onClick={() => setTab("review")}>
+          Revision
+        </button>
+        <button className={cx("segmented-button", tab === "gaspro" && "is-active")} type="button" onClick={() => setTab("gaspro")}>
+          Gaspro
+        </button>
+      </div>
+
+      {tab === "review" ? <ReviewPanel token={token} /> : <GasproPanel token={token} />}
+    </AppShell>
   );
 }
 
 export default function App() {
   const session = useSession();
-  if (!session.token || !session.user) return <LoginScreen onLogin={session.save} />;
-  return session.user.role === "employee"
-    ? <EmployeeDashboard token={session.token} user={session.user} onLogout={session.clear} />
-    : <StaffDashboard token={session.token} user={session.user} onLogout={session.clear} />;
-}
 
-const styles = {
-  pageCenter: { minHeight: "100vh", display: "grid", placeItems: "center", background: "#0f172a", padding: 24, color: "#e2e8f0" },
-  page: { minHeight: "100vh", background: "#0f172a", padding: 24, color: "#e2e8f0" },
-  card: { width: "min(460px, 100%)", background: "#111827", borderRadius: 16, padding: 24, boxShadow: "0 20px 50px rgba(0,0,0,.25)" },
-  panel: { background: "#111827", borderRadius: 16, padding: 20, display: "grid", gap: 16 },
-  title: { marginTop: 0, marginBottom: 16 },
-  input: { width: "100%", padding: 12, borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", boxSizing: "border-box" },
-  textarea: { width: "100%", minHeight: 100, padding: 12, borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", boxSizing: "border-box" },
-  primaryButton: { padding: "12px 16px", borderRadius: 10, border: 0, background: "#f59e0b", color: "#111827", fontWeight: 700, cursor: "pointer" },
-  secondaryButton: { padding: "10px 14px", borderRadius: 10, border: "1px solid #475569", background: "#1e293b", color: "#e2e8f0", cursor: "pointer" },
-  linkButton: { background: "transparent", border: 0, color: "#f59e0b", cursor: "pointer", padding: 0 },
-  linkDanger: { background: "transparent", border: 0, color: "#f87171", cursor: "pointer", padding: 0, justifySelf: "start" },
-  segmented: { display: "flex", gap: 8, marginBottom: 16 },
-  segment: { flex: 1, padding: 10, borderRadius: 999, border: "1px solid #334155", background: "#0f172a", color: "#e2e8f0", cursor: "pointer" },
-  segmentActive: { flex: 1, padding: 10, borderRadius: 999, border: "1px solid #f59e0b", background: "#f59e0b", color: "#111827", cursor: "pointer", fontWeight: 700 },
-  columns: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  section: { display: "grid", gap: 12, padding: 16, borderRadius: 12, background: "#0b1220" },
-  sectionHeader: { display: "flex", justifyContent: "space-between", alignItems: "center" },
-  rowCard: { display: "grid", gap: 10, padding: 12, borderRadius: 12, background: "#111827", border: "1px solid #1f2937" },
-  listItem: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, padding: 12, borderRadius: 12, background: "#0b1220", cursor: "pointer" },
-  grid2: { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 },
-  totalBox: { padding: 14, borderRadius: 12, background: "#0b1220", fontWeight: 700 },
-  muted: { color: "#94a3b8", fontSize: 14 },
-  error: { color: "#fecaca", background: "#7f1d1d", padding: 12, borderRadius: 10 },
-  success: { color: "#dcfce7", background: "#14532d", padding: 12, borderRadius: 10, marginBottom: 16 },
-  codeBox: { background: "#020617", padding: 12, borderRadius: 12, overflowX: "auto", fontSize: 12 },
-};
+  if (!session.token || !session.user) {
+    return <LoginScreen onLogin={session.save} />;
+  }
+
+  return session.user.role === "employee" ? (
+    <EmployeeDashboard token={session.token} user={session.user} onLogout={session.clear} />
+  ) : (
+    <StaffDashboard token={session.token} user={session.user} onLogout={session.clear} />
+  );
+}
