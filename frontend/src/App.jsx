@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import "./app.css";
 
 const API_URL = "";
+const THEME_KEY = "cierre_theme";
+const EDITABLE_STATUSES = ["draft", "submitted", "observed"];
 
 const VOUCHER_FIELDS = [
   { keyQty: "bcr_qty", keyAmount: "bcr_monto", label: "BCR", accent: "#ff9f1a" },
@@ -18,7 +20,7 @@ const MOVEMENT_SECTIONS = [
     key: "creditos",
     index: "03",
     title: "Creditos",
-    subtitle: "Registra cada credito por separado para facilitar auditoria y seguimiento.",
+    subtitle: "",
     accent: "#6c63ff",
     addLabel: "Agregar credito",
     fields: [
@@ -32,7 +34,7 @@ const MOVEMENT_SECTIONS = [
     key: "sinpes",
     index: "04",
     title: "SINPE movil",
-    subtitle: "Anota la descripcion y el comprobante para conciliacion documental.",
+    subtitle: "",
     accent: "#0f9d76",
     addLabel: "Agregar SINPE",
     fields: [
@@ -46,7 +48,7 @@ const MOVEMENT_SECTIONS = [
     key: "transferencias",
     index: "05",
     title: "Transferencias",
-    subtitle: "Usa esta seccion para movimientos bancarios distintos a SINPE movil.",
+    subtitle: "",
     accent: "#2f6fed",
     addLabel: "Agregar transferencia",
     fields: [
@@ -60,7 +62,7 @@ const MOVEMENT_SECTIONS = [
     key: "vales",
     index: "06",
     title: "Vales",
-    subtitle: "Controla salidas sin cobro inmediato para mantener la caja clara.",
+    subtitle: "",
     accent: "#d97706",
     addLabel: "Agregar vale",
     fields: [
@@ -74,7 +76,7 @@ const MOVEMENT_SECTIONS = [
     key: "pagos",
     index: "07",
     title: "Pagos realizados",
-    subtitle: "Documenta pagos hechos desde caja para que queden visibles en el total.",
+    subtitle: "",
     accent: "#d94b4b",
     addLabel: "Agregar pago",
     fields: [
@@ -87,7 +89,7 @@ const MOVEMENT_SECTIONS = [
 ];
 
 const REVIEW_STATUS_OPTIONS = [
-  { value: "document_reviewed", label: "Revision documental" },
+  { value: "document_reviewed", label: "Revisado" },
   { value: "observed", label: "Observado" },
   { value: "approved", label: "Aprobado" },
 ];
@@ -98,7 +100,30 @@ const STATUS_META = {
   observed: { label: "Observado", tone: "rose" },
   document_reviewed: { label: "Revisado", tone: "teal" },
   approved: { label: "Aprobado", tone: "emerald" },
+  reconciled: { label: "Conciliado", tone: "indigo" },
 };
+
+function detailMessage(detail) {
+  if (!detail) return "";
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "";
+        const location = Array.isArray(item.loc)
+          ? item.loc.filter((part) => part !== "body").join(" / ")
+          : "";
+        return [location, item.msg].filter(Boolean).join(": ");
+      })
+      .filter(Boolean)
+      .join(". ");
+  }
+  if (typeof detail === "object") {
+    return detail.message || detail.error || "";
+  }
+  return "";
+}
 
 async function api(path, options = {}, token = null) {
   const headers = { ...(options.headers || {}) };
@@ -109,8 +134,17 @@ async function api(path, options = {}, token = null) {
 
   const response = await fetch(`${API_URL}${path}`, { ...options, headers });
   if (!response.ok) {
-    const errorPayload = await response.json().catch(() => ({}));
-    throw new Error(errorPayload.detail || "Error del servidor");
+    const contentType = response.headers.get("content-type") || "";
+    let message = "";
+
+    if (contentType.includes("application/json")) {
+      const errorPayload = await response.json().catch(() => null);
+      message = detailMessage(errorPayload?.detail) || detailMessage(errorPayload);
+    } else {
+      message = (await response.text().catch(() => "")).trim();
+    }
+
+    throw new Error(message || `Error ${response.status}`);
   }
 
   const contentType = response.headers.get("content-type") || "";
@@ -158,6 +192,29 @@ function formatDateTimeLabel(value) {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
+}
+
+function isValidDateValue(value) {
+  if (!value) return false;
+  const date = new Date(`${value}T00:00:00`);
+  return !Number.isNaN(date.getTime());
+}
+
+function canEditCierre(cierre) {
+  if (!EDITABLE_STATUSES.includes(cierre?.status)) return false;
+  if (cierre?.document_reviewed_at || cierre?.reconciled_at) return false;
+  if (!cierre?.editable_until) return false;
+
+  const editableUntil = new Date(cierre.editable_until);
+  if (Number.isNaN(editableUntil.getTime())) return false;
+  return editableUntil.getTime() > Date.now();
+}
+
+function validateCierrePayload(payload, { requireEmployee = false } = {}) {
+  if (!isValidDateValue(payload?.fecha)) return "Selecciona una fecha valida.";
+  if (!String(payload?.turno || "").trim()) return "Indica el turno.";
+  if (requireEmployee && !payload?.employee_id) return "Selecciona el empleado.";
+  return "";
 }
 
 function emptyMovement() {
@@ -264,6 +321,31 @@ function voucherSnapshot(vouchers = {}) {
   })).filter((item) => item.qty > 0 || item.amount > 0);
 }
 
+function detectTheme() {
+  if (typeof window === "undefined") return "light";
+
+  const savedTheme = window.localStorage.getItem(THEME_KEY);
+  if (savedTheme === "light" || savedTheme === "dark") return savedTheme;
+
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+function useTheme() {
+  const [theme, setTheme] = useState(detectTheme);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+    window.localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
+  return {
+    theme,
+    isDark: theme === "dark",
+    toggleTheme: () => setTheme((current) => (current === "dark" ? "light" : "dark")),
+  };
+}
+
 function useSession() {
   const [token, setToken] = useState(() => localStorage.getItem("cierre_token") || "");
   const [user, setUser] = useState(() => {
@@ -296,6 +378,17 @@ function StatusPill({ status }) {
   return <span className={cx("status-pill", `tone-${meta.tone}`)}>{meta.label}</span>;
 }
 
+function ThemeToggle({ isDark, onToggle, floating = false }) {
+  return (
+    <button className={cx("theme-toggle", floating && "theme-toggle-floating")} type="button" onClick={onToggle}>
+      <span className="theme-toggle-track">
+        <span className={cx("theme-toggle-thumb", isDark && "is-dark")} />
+      </span>
+      <span>{isDark ? "Modo claro" : "Modo nocturno"}</span>
+    </button>
+  );
+}
+
 function Panel({ eyebrow, title, subtitle, accent = "#ff9f1a", action, className, children }) {
   return (
     <section className={cx("surface-panel", className)} style={{ "--panel-accent": accent }}>
@@ -321,7 +414,7 @@ function FormSection({ index, title, subtitle, accent = "#ff9f1a", extra, childr
         <div className="section-index">{index}</div>
         <div className="form-section-copy">
           <h3>{title}</h3>
-          <p>{subtitle}</p>
+          {subtitle ? <p>{subtitle}</p> : null}
         </div>
         {extra ? <div className="form-section-extra">{extra}</div> : null}
       </div>
@@ -678,7 +771,7 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
   );
 }
 
-function AppShell({ user, title, subtitle, onLogout, children }) {
+function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, children }) {
   return (
     <div className="app-shell">
       <div className="ambient ambient-a" />
@@ -701,11 +794,14 @@ function AppShell({ user, title, subtitle, onLogout, children }) {
             <p>{subtitle}</p>
           </div>
 
-          <div className="shell-user-card">
-            <span className="user-role">{user.role}</span>
-            <button className="btn btn-secondary" type="button" onClick={onLogout}>
-              Cerrar sesion
-            </button>
+          <div className="shell-actions">
+            <ThemeToggle isDark={isDark} onToggle={onToggleTheme} />
+            <div className="shell-user-card">
+              <span className="user-role">{user.role}</span>
+              <button className="btn btn-secondary" type="button" onClick={onLogout}>
+                Cerrar sesion
+              </button>
+            </div>
           </div>
         </header>
 
@@ -715,13 +811,14 @@ function AppShell({ user, title, subtitle, onLogout, children }) {
   );
 }
 
-function LoginScreen({ onLogin }) {
+function LoginScreen({ onLogin, isDark, onToggleTheme }) {
   const [mode, setMode] = useState("employee");
   const [pin, setPin] = useState("");
   const [username, setUsername] = useState("supervisor");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const today = useMemo(() => formatDateLabel(new Date().toISOString().slice(0, 10)), []);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -743,42 +840,35 @@ function LoginScreen({ onLogin }) {
     <div className="auth-shell">
       <div className="ambient ambient-a" />
       <div className="ambient ambient-b" />
+      <ThemeToggle isDark={isDark} onToggle={onToggleTheme} floating />
 
       <div className="auth-grid">
         <section className="auth-brand">
-          <div className="eyebrow">Operacion de cierres</div>
-          <h1>Un panel mas claro para registrar, revisar y conciliar cada turno.</h1>
-          <p>
-            La app concentra captura operativa, revision documental y cruces de Gaspro con una experiencia
-            pensada para usar en celular o en escritorio sin perder contexto.
-          </p>
-
-          <div className="auth-metric-grid">
-            <MetricCard label="Captura" value="7 bloques" caption="Vouchers, movimientos, caja y observaciones" accent="#ff9f1a" />
-            <MetricCard label="Revision" value="Roles" caption="Empleado, supervisor y admin en la misma base" accent="#0f766e" />
-            <MetricCard label="Salida" value="Railway" caption="Lista para produccion con frontend y API unificados" accent="#2f6fed" />
+          <div className="brand-lockup brand-lockup-large">
+            <div className="brand-mark">LM</div>
+            <div>
+              <div className="brand-kicker">Servicentro La Marina</div>
+              <div className="brand-title">Cierre central</div>
+            </div>
           </div>
 
-          <div className="feature-list">
-            <div className="feature-item">
-              <strong>Operacion diaria</strong>
-              <span>Captura de cierres con lectura inmediata del total reportado.</span>
-            </div>
-            <div className="feature-item">
-              <strong>Control documental</strong>
-              <span>Revision por estado con notas claras para el equipo de supervision.</span>
-            </div>
-            <div className="feature-item">
-              <strong>Conciliacion</strong>
-              <span>Importacion de Gaspro y consulta de historial en una sola vista.</span>
-            </div>
+          <div className="auth-brand-copy">
+            <div className="eyebrow">Acceso rapido</div>
+            <h1>Captura clara, moderna y sin ruido.</h1>
+            <p>Entra y empieza a trabajar.</p>
+          </div>
+
+          <div className="auth-brand-panel">
+            <span>Hoy</span>
+            <strong>{today}</strong>
+            <small>Lista para escritorio y movil.</small>
           </div>
         </section>
 
         <section className="auth-card">
           <div className="eyebrow">Acceso</div>
           <h2>Entra a tu panel</h2>
-          <p>Selecciona el tipo de acceso y usa las credenciales correspondientes.</p>
+          <p>Elige tu acceso y continua.</p>
 
           <div className="segmented-control">
             <button className={cx("segmented-button", mode === "employee" && "is-active")} type="button" onClick={() => setMode("employee")}>
@@ -792,7 +882,7 @@ function LoginScreen({ onLogin }) {
           <form className="auth-form" onSubmit={submit}>
             {mode === "employee" ? (
               <>
-                <FieldShell label="PIN del empleado" hint="Ingresa el codigo de 4 digitos.">
+                <FieldShell label="PIN" hint="4 digitos">
                   <input
                     className="field-input pin-input"
                     type="password"
@@ -803,7 +893,7 @@ function LoginScreen({ onLogin }) {
                     placeholder="0000"
                   />
                 </FieldShell>
-                <div className="hint-card">El acceso de empleados se resuelve por PIN y abre directamente el panel de captura.</div>
+                <div className="hint-card">Acceso directo al cierre.</div>
               </>
             ) : (
               <>
@@ -824,7 +914,16 @@ function LoginScreen({ onLogin }) {
   );
 }
 
-function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee = false, defaultTurno = "1", editing = false }) {
+function CierreForm({
+  form,
+  setForm,
+  onSave,
+  employees = [],
+  canChooseEmployee = false,
+  defaultTurno = "1",
+  editing = false,
+  saving = false,
+}) {
   const summary = useMemo(() => summarizePayload(form), [form]);
   const movementCount = useMemo(
     () =>
@@ -851,9 +950,9 @@ function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee =
     <form className="form-stack" onSubmit={submit}>
       <div className="form-hero">
         <div>
-          <div className="eyebrow">Captura operativa</div>
-          <h3>{editing ? "Actualiza el cierre seleccionado" : "Completa la informacion del turno"}</h3>
-          <p>El formulario se guarda con el mismo formato que consume la API y mantiene el total visible.</p>
+          <div className="eyebrow">{editing ? "Editando" : "Nuevo cierre"}</div>
+          <h3>{editing ? "Actualiza y guarda" : "Registra el turno"}</h3>
+          <p>Completa, revisa el total y guarda.</p>
         </div>
         <div className="form-hero-card">
           <span>Total reportado</span>
@@ -865,7 +964,6 @@ function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee =
       <FormSection
         index="01"
         title="Contexto del turno"
-        subtitle="Fecha, turno, datafono y montos base para iniciar el cierre."
         accent="#13315c"
       >
         <div className="field-grid field-grid-3">
@@ -889,9 +987,9 @@ function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee =
             </SelectField>
           ) : (
             <div className="context-card">
-              <span>Turno sugerido</span>
+              <span>Turno base</span>
               <strong>{form.turno || defaultTurno}</strong>
-              <small>Puedes ajustarlo si el cierre corresponde a otra jornada.</small>
+              <small>Puedes cambiarlo si hace falta.</small>
             </div>
           )}
         </div>
@@ -900,7 +998,6 @@ function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee =
       <FormSection
         index="02"
         title="Vouchers y tarjetas"
-        subtitle="Registra cantidad y monto por procesador para una conciliacion mas precisa."
         accent="#ff9f1a"
       >
         <VoucherGrid vouchers={form.vouchers} setVoucher={setVoucher} />
@@ -918,7 +1015,6 @@ function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee =
       <FormSection
         index="08"
         title="Observaciones"
-        subtitle="Agrega contexto operativo, incidencias o notas para la revision."
         accent="#475569"
       >
         <TextAreaField
@@ -930,22 +1026,23 @@ function CierreForm({ form, setForm, onSave, employees = [], canChooseEmployee =
       </FormSection>
 
       <div className="form-submit-row">
-        <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyForm(defaultTurno))}>
-          Reiniciar formulario
+        <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyForm(defaultTurno))} disabled={saving}>
+          Limpiar
         </button>
-        <button className="btn btn-primary" type="submit">
-          {editing ? "Guardar cambios" : "Guardar cierre"}
+        <button className="btn btn-primary" type="submit" disabled={saving}>
+          {saving ? "Guardando..." : editing ? "Guardar cambios" : "Guardar cierre"}
         </button>
       </div>
     </form>
   );
 }
 
-function EmployeeDashboard({ token, user, onLogout }) {
+function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [cierres, setCierres] = useState([]);
   const [draft, setDraft] = useState(() => emptyForm(user.default_turno));
   const [editing, setEditing] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
 
   const load = async () => {
@@ -981,6 +1078,13 @@ function EmployeeDashboard({ token, user, onLogout }) {
   };
 
   const save = async (payload) => {
+    const validationError = validateCierrePayload(payload);
+    if (validationError) {
+      setMessage({ tone: "error", text: validationError });
+      return;
+    }
+
+    setSaving(true);
     setMessage(null);
     try {
       if (editing?.id) {
@@ -995,6 +1099,8 @@ function EmployeeDashboard({ token, user, onLogout }) {
       await load();
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -1017,14 +1123,16 @@ function EmployeeDashboard({ token, user, onLogout }) {
     <AppShell
       user={user}
       title="Panel de empleado"
-      subtitle="Registra tu cierre con una vista clara del total y consulta tu historial inmediato."
+      subtitle="Tu cierre y tu historial, en una sola vista."
       onLogout={onLogout}
+      isDark={isDark}
+      onToggleTheme={onToggleTheme}
     >
       <div className="metric-grid">
-        <MetricCard label="Cierres registrados" value={statusCounts.total} caption="Historial del usuario actual" accent="#13315c" />
-        <MetricCard label="Pendientes" value={statusCounts.pending} caption="Borradores, enviados y revisiones activas" accent="#ff9f1a" />
-        <MetricCard label="Aprobados" value={statusCounts.approved} caption="Cierres finalizados" accent="#0f9d76" />
-        <MetricCard label="Total en captura" value={`CRC ${money(summary.totalReportado)}`} caption={`Turno ${draft.turno || user.default_turno || "-"}`} accent="#2f6fed" />
+        <MetricCard label="Cierres" value={statusCounts.total} caption="Tu historial" accent="#13315c" />
+        <MetricCard label="Pendientes" value={statusCounts.pending} caption="Aun abiertos" accent="#ff9f1a" />
+        <MetricCard label="Aprobados" value={statusCounts.approved} caption="Listos" accent="#0f9d76" />
+        <MetricCard label="En pantalla" value={`CRC ${money(summary.totalReportado)}`} caption={`Turno ${draft.turno || user.default_turno || "-"}`} accent="#2f6fed" />
       </div>
 
       {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
@@ -1034,20 +1142,27 @@ function EmployeeDashboard({ token, user, onLogout }) {
           <Panel
             eyebrow="Formulario"
             title={editing ? "Editar cierre" : "Nuevo cierre"}
-            subtitle="El total se recalcula en tiempo real a medida que completas cada bloque."
+            subtitle="Captura directa."
             accent="#ff9f1a"
             action={
-              <button className="btn btn-secondary" type="button" onClick={startNew}>
+              <button className="btn btn-secondary" type="button" onClick={startNew} disabled={saving}>
                 {editing ? "Cancelar edicion" : "Nuevo cierre"}
               </button>
             }
           >
-            <CierreForm form={draft} setForm={setDraft} onSave={save} defaultTurno={user.default_turno || "1"} editing={Boolean(editing)} />
+            <CierreForm
+              form={draft}
+              setForm={setDraft}
+              onSave={save}
+              defaultTurno={user.default_turno || "1"}
+              editing={Boolean(editing)}
+              saving={saving}
+            />
           </Panel>
         </div>
 
         <div className="stack">
-          <Panel eyebrow="Lectura rapida" title="Resumen del turno" subtitle="Revisa el balance antes de guardar." accent="#0f766e" className="sticky-panel">
+          <Panel eyebrow="Resumen" title="Turno actual" accent="#0f766e" className="sticky-panel">
             <SummaryBoard payload={draft} summary={summary} />
             <div className="mini-context-grid">
               <div className="mini-context-card">
@@ -1068,18 +1183,17 @@ function EmployeeDashboard({ token, user, onLogout }) {
           <Panel
             eyebrow="Historial"
             title="Mis cierres"
-            subtitle="Selecciona un registro para editarlo mientras siga disponible."
             accent="#13315c"
             action={<button className="btn btn-ghost" type="button" onClick={load}>Actualizar</button>}
           >
             {loading ? (
-              <EmptyState title="Cargando cierres" body="Estamos consultando tu historial mas reciente." />
+              <EmptyState title="Cargando" body="Consultando cierres." />
             ) : cierres.length === 0 ? (
-              <EmptyState title="Sin cierres aun" body="Cuando guardes el primer cierre aparecera aqui." />
+              <EmptyState title="Sin cierres" body="Aun no hay registros." />
             ) : (
               <div className="history-list">
                 {cierres.map((cierre) => {
-                  const canEdit = ["draft", "submitted", "observed"].includes(cierre.status);
+                  const canEdit = canEditCierre(cierre);
                   return (
                     <div className="history-card" key={cierre.id}>
                       <div className="history-card-main">
@@ -1161,7 +1275,9 @@ function ReviewPanel({ token }) {
   useEffect(() => {
     if (selected) {
       setNotes(selected.audit_notes || "");
-      setStatus(selected.status || "document_reviewed");
+      setStatus(
+        REVIEW_STATUS_OPTIONS.some((option) => option.value === selected.status) ? selected.status : "document_reviewed",
+      );
     }
   }, [selected]);
 
@@ -1195,8 +1311,8 @@ function ReviewPanel({ token }) {
     <div className="dashboard-grid">
       <Panel
         eyebrow="Bandeja"
-        title="Cierres para revision"
-        subtitle="Filtra por fecha, empleado o estado para encontrar el cierre que necesitas."
+        title="Cierres"
+        subtitle="Busca y selecciona."
         accent="#13315c"
       >
         <div className="toolbar-grid">
@@ -1212,9 +1328,9 @@ function ReviewPanel({ token }) {
         </div>
 
         {loading ? (
-          <EmptyState title="Consultando cierres" body="Estamos cargando la bandeja de revision." />
+          <EmptyState title="Cargando" body="Consultando cierres." />
         ) : filtered.length === 0 ? (
-          <EmptyState title="Sin coincidencias" body="Prueba con otro estado o cambia el texto de busqueda." />
+          <EmptyState title="Sin coincidencias" body="Ajusta la busqueda." />
         ) : (
           <div className="selectable-list">
             {filtered.map((cierre) => (
@@ -1241,7 +1357,7 @@ function ReviewPanel({ token }) {
       <Panel
         eyebrow="Detalle"
         title={selected ? selected.empleado : "Selecciona un cierre"}
-        subtitle={selected ? `Fecha ${formatDateLabel(selected.fecha)} / Turno ${selected.turno || "-"}` : "La vista de detalle aparece aqui."}
+        subtitle={selected ? `${formatDateLabel(selected.fecha)} / Turno ${selected.turno || "-"}` : "El detalle aparece aqui."}
         accent="#ff9f1a"
       >
         {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
@@ -1271,21 +1387,21 @@ function ReviewPanel({ token }) {
               </SelectField>
 
               <TextAreaField
-                label="Notas de revision"
+                label="Notas"
                 value={notes}
                 onChange={setNotes}
-                placeholder="Anota hallazgos, observaciones o aclaraciones para el empleado."
+                placeholder="Observaciones del cierre"
               />
             </div>
 
             <div className="form-submit-row">
               <button className="btn btn-primary" type="button" onClick={submitReview} disabled={saving}>
-                {saving ? "Guardando..." : "Guardar revision"}
+                {saving ? "Guardando..." : "Guardar cambios"}
               </button>
             </div>
           </div>
         ) : (
-          <EmptyState title="Ningun cierre seleccionado" body="Elige un registro de la bandeja para revisar sus detalles." />
+          <EmptyState title="Sin seleccion" body="Elige un cierre." />
         )}
       </Panel>
     </div>
@@ -1296,6 +1412,7 @@ function GasproPanel({ token }) {
   const today = new Date().toISOString().slice(0, 10);
   const [imports, setImports] = useState([]);
   const [file, setFile] = useState(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
   const [mode, setMode] = useState("general");
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
@@ -1322,6 +1439,10 @@ function GasproPanel({ token }) {
   const submit = async (event) => {
     event.preventDefault();
     if (!file) return;
+    if (!isValidDateValue(dateFrom) || !isValidDateValue(dateTo) || dateFrom > dateTo) {
+      setMessage({ tone: "error", text: "Revisa el rango de fechas." });
+      return;
+    }
 
     const form = new FormData();
     form.append("import_mode", mode);
@@ -1335,6 +1456,7 @@ function GasproPanel({ token }) {
       const data = await api("/api/gaspro/import", { method: "POST", body: form }, token);
       setMessage({ tone: "success", text: `Importacion ${data.import_id} aplicada a ${data.matched_cierres} cierres.` });
       setFile(null);
+      setFileInputKey((current) => current + 1);
       await load();
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
@@ -1347,8 +1469,8 @@ function GasproPanel({ token }) {
     <div className="dashboard-grid">
       <Panel
         eyebrow="Carga"
-        title="Importar archivo de Gaspro"
-        subtitle="Sube el archivo general o detallado para cruzarlo contra los cierres ya registrados."
+        title="Importar Gaspro"
+        subtitle="Archivo y rango."
         accent="#0f766e"
       >
         {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
@@ -1364,10 +1486,15 @@ function GasproPanel({ token }) {
           </div>
 
           <label className="upload-card">
-            <input className="upload-input" type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} />
+            <input
+              key={fileInputKey}
+              className="upload-input"
+              type="file"
+              onChange={(event) => setFile(event.target.files?.[0] || null)}
+            />
             <span className="upload-kicker">Archivo fuente</span>
             <strong>{file ? file.name : "Selecciona un CSV o XLSX para importar"}</strong>
-            <p>El archivo se procesa en el servidor y se cruza contra el rango de fechas elegido.</p>
+            <p>CSV o XLSX.</p>
           </label>
 
           <div className="form-submit-row">
@@ -1381,14 +1508,13 @@ function GasproPanel({ token }) {
       <Panel
         eyebrow="Historial"
         title="Importaciones recientes"
-        subtitle="Consulta que archivos se procesaron y cuantos cierres fueron conciliados."
         accent="#13315c"
         action={<button className="btn btn-ghost" type="button" onClick={load}>Actualizar</button>}
       >
         {loading ? (
-          <EmptyState title="Cargando historial" body="Estamos consultando las importaciones registradas." />
+          <EmptyState title="Cargando" body="Consultando historial." />
         ) : imports.length === 0 ? (
-          <EmptyState title="Sin importaciones" body="Cuando subas el primer archivo de Gaspro aparecera aqui." />
+          <EmptyState title="Sin importaciones" body="Aun no hay archivos cargados." />
         ) : (
           <div className="timeline-list">
             {imports.map((item) => (
@@ -1411,7 +1537,7 @@ function GasproPanel({ token }) {
   );
 }
 
-function StaffDashboard({ token, user, onLogout }) {
+function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [tab, setTab] = useState("review");
   const [employees, setEmployees] = useState([]);
 
@@ -1425,13 +1551,15 @@ function StaffDashboard({ token, user, onLogout }) {
     <AppShell
       user={user}
       title={user.role === "admin" ? "Centro de control" : "Panel de supervision"}
-      subtitle="Revisa cierres, deja observaciones y concilia archivos de Gaspro desde una misma consola."
+      subtitle="Revision y conciliacion desde un solo lugar."
       onLogout={onLogout}
+      isDark={isDark}
+      onToggleTheme={onToggleTheme}
     >
       <div className="metric-grid">
-        <MetricCard label="Equipo activo" value={employees.length} caption="Usuarios con rol empleado" accent="#13315c" />
-        <MetricCard label="Vista actual" value={tab === "review" ? "Revision" : "Gaspro"} caption="Cambia entre control documental y conciliacion" accent="#ff9f1a" />
-        <MetricCard label="Rol" value={user.role} caption="Permisos cargados en esta sesion" accent="#0f766e" />
+        <MetricCard label="Equipo" value={employees.length} caption="Empleados activos" accent="#13315c" />
+        <MetricCard label="Vista" value={tab === "review" ? "Cierres" : "Gaspro"} caption="Panel actual" accent="#ff9f1a" />
+        <MetricCard label="Rol" value={user.role} caption="Sesion actual" accent="#0f766e" />
       </div>
 
       <div className="segmented-control segmented-control-inline">
@@ -1450,14 +1578,39 @@ function StaffDashboard({ token, user, onLogout }) {
 
 export default function App() {
   const session = useSession();
+  const theme = useTheme();
+
+  const logout = async () => {
+    if (session.token) {
+      try {
+        await api("/api/auth/logout", { method: "POST" }, session.token);
+      } catch {
+        // If the session already expired we still clear the local state.
+      }
+    }
+
+    session.clear();
+  };
 
   if (!session.token || !session.user) {
-    return <LoginScreen onLogin={session.save} />;
+    return <LoginScreen onLogin={session.save} isDark={theme.isDark} onToggleTheme={theme.toggleTheme} />;
   }
 
   return session.user.role === "employee" ? (
-    <EmployeeDashboard token={session.token} user={session.user} onLogout={session.clear} />
+    <EmployeeDashboard
+      token={session.token}
+      user={session.user}
+      onLogout={logout}
+      isDark={theme.isDark}
+      onToggleTheme={theme.toggleTheme}
+    />
   ) : (
-    <StaffDashboard token={session.token} user={session.user} onLogout={session.clear} />
+    <StaffDashboard
+      token={session.token}
+      user={session.user}
+      onLogout={logout}
+      isDark={theme.isDark}
+      onToggleTheme={theme.toggleTheme}
+    />
   );
 }

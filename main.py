@@ -272,13 +272,35 @@ def default_payload() -> Dict[str, Any]:
 
 
 def normalize_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=422, detail="Formato de cierre invalido")
+
     payload = default_payload()
-    if data:
-        for key in ("fecha", "turno", "datafono", "deposito", "efectivo", "observaciones"):
-            payload[key] = str(data.get(key, payload[key]) or payload[key])
-    payload["vouchers"] = {**default_payload()["vouchers"], **(data.get("vouchers") or {})}
+
+    raw_fecha = data.get("fecha") or payload["fecha"]
+    try:
+        payload["fecha"] = parse_date_value(raw_fecha).isoformat()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Fecha invalida") from exc
+
+    payload["turno"] = str(data.get("turno", payload["turno"]) or payload["turno"]).strip() or payload["turno"]
+    payload["datafono"] = str(data.get("datafono", payload["datafono"]) or "").strip()
+    payload["deposito"] = str(data.get("deposito", payload["deposito"]) or "").strip()
+    payload["efectivo"] = str(data.get("efectivo", payload["efectivo"]) or "").strip()
+    payload["observaciones"] = str(data.get("observaciones", payload["observaciones"]) or "").strip()
+
+    vouchers = data.get("vouchers") or {}
+    if not isinstance(vouchers, dict):
+        raise HTTPException(status_code=422, detail="Formato de vouchers invalido")
+    payload["vouchers"] = {**default_payload()["vouchers"], **vouchers}
+
     for field in MOVEMENT_FIELDS:
-        payload[field] = [normalize_movement(item, field) for item in (data.get(field) or [])]
+        items = data.get(field) or []
+        if not isinstance(items, list):
+            raise HTTPException(status_code=422, detail=f"Formato invalido en {field}")
+        payload[field] = [normalize_movement(item, field) for item in items]
     return payload
 
 
