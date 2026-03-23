@@ -45,22 +45,8 @@ const MOVEMENT_SECTIONS = [
     ],
   },
   {
-    key: "transferencias",
-    index: "05",
-    title: "Transferencias",
-    subtitle: "",
-    accent: "#2f6fed",
-    addLabel: "Agregar transferencia",
-    fields: [
-      { key: "descripcion", label: "Detalle", placeholder: "ej. transferencia bancaria", span: 2 },
-      { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
-      { key: "referencia", label: "Referencia", placeholder: "Banco o comprobante" },
-      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
-    ],
-  },
-  {
     key: "vales",
-    index: "06",
+    index: "05",
     title: "Vales",
     subtitle: "",
     accent: "#d97706",
@@ -74,7 +60,7 @@ const MOVEMENT_SECTIONS = [
   },
   {
     key: "pagos",
-    index: "07",
+    index: "06",
     title: "Pagos realizados",
     subtitle: "",
     accent: "#d94b4b",
@@ -252,7 +238,6 @@ function emptyForm(defaultTurno = "1") {
     },
     creditos: [],
     sinpes: [],
-    transferencias: [],
     deposito: "",
     vales: [],
     pagos: [],
@@ -271,7 +256,6 @@ function summarizePayload(payload) {
 
   const totalCreditos = sumItems(payload?.creditos);
   const totalSinpes = sumItems(payload?.sinpes);
-  const totalTransferencias = sumItems(payload?.transferencias);
   const totalVales = sumItems(payload?.vales);
   const totalPagos = sumItems(payload?.pagos);
   const deposito = parseAmount(payload?.deposito);
@@ -281,7 +265,6 @@ function summarizePayload(payload) {
     totalVouchers: vouchers,
     totalCreditos,
     totalSinpes,
-    totalTransferencias,
     totalVales,
     totalPagos,
     deposito,
@@ -290,7 +273,6 @@ function summarizePayload(payload) {
       vouchers +
       totalCreditos +
       totalSinpes +
-      totalTransferencias +
       deposito +
       efectivo -
       totalVales -
@@ -304,7 +286,6 @@ function normalizeSummary(summary) {
     totalVouchers: parseAmount(summary.totalVouchers ?? summary.total_vouchers),
     totalCreditos: parseAmount(summary.totalCreditos ?? summary.total_creditos),
     totalSinpes: parseAmount(summary.totalSinpes ?? summary.total_sinpes),
-    totalTransferencias: parseAmount(summary.totalTransferencias ?? summary.total_transferencias),
     totalVales: parseAmount(summary.totalVales ?? summary.total_vales),
     totalPagos: parseAmount(summary.totalPagos ?? summary.total_pagos),
     deposito: parseAmount(summary.deposito),
@@ -507,13 +488,25 @@ function EmptyState({ title, body }) {
   );
 }
 
+function HistorySkeleton() {
+  return (
+    <div className="history-list">
+      {[1, 2, 3].map((i) => (
+        <div key={i} className="history-card history-card-skeleton">
+          <div className="skeleton-block" style={{ width: "60%", height: "14px" }} />
+          <div className="skeleton-block" style={{ width: "40%", height: "12px", marginTop: "8px" }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SummaryBoard({ payload, summary, compact = false }) {
   const totals = normalizeSummary(summary) || summarizePayload(payload || emptyForm());
   const rows = [
     { label: "Vouchers", value: totals.totalVouchers, tone: "amber" },
     { label: "Creditos", value: totals.totalCreditos, tone: "indigo" },
     { label: "SINPE movil", value: totals.totalSinpes, tone: "emerald" },
-    { label: "Transferencias", value: totals.totalTransferencias, tone: "sky" },
     { label: "Deposito", value: totals.deposito, tone: "navy" },
     { label: "Efectivo", value: totals.efectivo, tone: "teal" },
     { label: "Vales", value: totals.totalVales, tone: "rust", negative: true },
@@ -552,28 +545,48 @@ function VoucherGrid({ vouchers, setVoucher }) {
 
   return (
     <>
-      <div className="voucher-grid">
-        {VOUCHER_FIELDS.map((voucher) => (
-          <div className="voucher-card" key={voucher.keyAmount} style={{ "--voucher-accent": voucher.accent }}>
-            <div className="voucher-card-head">
-              <strong>{voucher.label}</strong>
-              <span>Monto y cantidad</span>
-            </div>
-            <div className="voucher-card-fields">
-              <TextField
-                label="Cantidad"
-                value={vouchers[voucher.keyQty] || ""}
-                onChange={(value) => setVoucher(voucher.keyQty, value)}
-                placeholder="0"
-              />
-              <MoneyField
-                label="Monto"
-                value={vouchers[voucher.keyAmount] || ""}
-                onChange={(value) => setVoucher(voucher.keyAmount, value)}
-              />
-            </div>
-          </div>
-        ))}
+      <div className="voucher-table-wrap">
+        <table className="voucher-table">
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Cantidad</th>
+              <th>Monto (CRC)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {VOUCHER_FIELDS.map((voucher) => (
+              <tr key={voucher.keyAmount}>
+                <td>
+                  <div className="voucher-name-cell">
+                    <span className="voucher-type-dot" style={{ background: voucher.accent }} />
+                    {voucher.label}
+                  </div>
+                </td>
+                <td>
+                  <input
+                    className="field-input voucher-cell-input"
+                    type="text"
+                    inputMode="numeric"
+                    value={vouchers[voucher.keyQty] || ""}
+                    onChange={(e) => setVoucher(voucher.keyQty, e.target.value)}
+                    placeholder="0"
+                  />
+                </td>
+                <td>
+                  <input
+                    className="field-input voucher-cell-input"
+                    type="text"
+                    inputMode="decimal"
+                    value={vouchers[voucher.keyAmount] || ""}
+                    onChange={(e) => setVoucher(voucher.keyAmount, e.target.value)}
+                    placeholder="0.00"
+                  />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
       <div className="inline-total">
         <span>Subtotal vouchers</span>
@@ -607,60 +620,64 @@ function MovementListEditor({ config, items, setItems }) {
       title={config.title}
       subtitle={config.subtitle}
       accent={config.accent}
-      extra={<span className="section-chip">{items.length} registros</span>}
+      extra={items.length > 0 ? <span className="section-chip">{items.length} registros</span> : null}
     >
       {items.length === 0 ? (
-        <EmptyState
-          title={`Sin ${config.title.toLowerCase()}`}
-          body="Puedes dejar la seccion vacia o agregar movimientos conforme aparezcan."
-        />
+        <div className="empty-state-action">
+          <p>No hay {config.title.toLowerCase()} en este turno.</p>
+          <button className="btn-add-movement" type="button" onClick={addItem}>
+            + {config.addLabel}
+          </button>
+        </div>
       ) : (
-        <div className="movement-stack">
-          {items.map((item, index) => (
-            <div className="movement-card" key={item.id || index}>
-              <div className="movement-card-head">
-                <div>
-                  <strong>{config.title} #{index + 1}</strong>
-                  <span>Completa el detalle y el monto reportado.</span>
-                </div>
-                <button className="btn btn-ghost-danger" type="button" onClick={() => removeItem(index)}>
-                  Quitar
-                </button>
-              </div>
-              <div className="movement-grid">
-                {config.fields.map((field) => (
-                  <div className={cx("movement-field", field.span === 2 && "movement-field-span-2")} key={field.key}>
-                    {field.kind === "money" ? (
-                      <MoneyField
-                        label={field.label}
-                        value={item[field.key] || ""}
-                        onChange={(value) => updateItem(index, field.key, value)}
-                      />
-                    ) : (
-                      <TextField
-                        label={field.label}
-                        value={item[field.key] || ""}
-                        onChange={(value) => updateItem(index, field.key, value)}
-                        placeholder={field.placeholder}
-                      />
-                    )}
+        <>
+          <div className="movement-stack">
+            {items.map((item, index) => (
+              <div className="movement-card" key={item.id || index} style={{ "--section-accent": config.accent }}>
+                <div className="movement-card-head">
+                  <div>
+                    <strong>{config.title} #{index + 1}</strong>
+                    <span>Completa el detalle y el monto reportado.</span>
                   </div>
-                ))}
+                  <button className="btn btn-ghost-danger" type="button" onClick={() => removeItem(index)}>
+                    Quitar
+                  </button>
+                </div>
+                <div className="movement-grid">
+                  {config.fields.map((field) => (
+                    <div className={cx("movement-field", field.span === 2 && "movement-field-span-2")} key={field.key}>
+                      {field.kind === "money" ? (
+                        <MoneyField
+                          label={field.label}
+                          value={item[field.key] || ""}
+                          onChange={(value) => updateItem(index, field.key, value)}
+                        />
+                      ) : (
+                        <TextField
+                          label={field.label}
+                          value={item[field.key] || ""}
+                          onChange={(value) => updateItem(index, field.key, value)}
+                          placeholder={field.placeholder}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      )}
+            ))}
+          </div>
 
-      <div className="section-actions">
-        <button className="btn btn-secondary" type="button" onClick={addItem}>
-          {config.addLabel}
-        </button>
-        <div className="inline-total inline-total-muted">
-          <span>Subtotal</span>
-          <strong>CRC {money(subtotal)}</strong>
-        </div>
-      </div>
+          <div className="section-actions">
+            <button className="btn-add-movement" type="button" onClick={addItem}>
+              + {config.addLabel}
+            </button>
+            <div className="inline-total inline-total-muted">
+              <span>Subtotal</span>
+              <strong>CRC {money(subtotal)}</strong>
+            </div>
+          </div>
+        </>
+      )}
     </FormSection>
   );
 }
@@ -703,7 +720,6 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
   const movementGroups = [
     { title: "Creditos", accent: "#6c63ff", items: payload.creditos || [] },
     { title: "SINPE movil", accent: "#0f9d76", items: payload.sinpes || [] },
-    { title: "Transferencias", accent: "#2f6fed", items: payload.transferencias || [] },
     { title: "Vales", accent: "#d97706", items: payload.vales || [] },
     { title: "Pagos", accent: "#d94b4b", items: payload.pagos || [] },
   ]
@@ -774,10 +790,6 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
 function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, children }) {
   return (
     <div className="app-shell">
-      <div className="ambient ambient-a" />
-      <div className="ambient ambient-b" />
-      <div className="ambient ambient-c" />
-
       <div className="shell-frame">
         <header className="shell-topbar">
           <div className="brand-lockup">
@@ -838,8 +850,6 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
 
   return (
     <div className="auth-shell">
-      <div className="ambient ambient-a" />
-      <div className="ambient ambient-b" />
       <ThemeToggle isDark={isDark} onToggle={onToggleTheme} floating />
 
       <div className="auth-grid">
@@ -927,7 +937,7 @@ function CierreForm({
   const summary = useMemo(() => summarizePayload(form), [form]);
   const movementCount = useMemo(
     () =>
-      ["creditos", "sinpes", "transferencias", "vales", "pagos"].reduce(
+      ["creditos", "sinpes", "vales", "pagos"].reduce(
         (total, key) => total + (form[key] || []).length,
         0,
       ),
@@ -948,27 +958,26 @@ function CierreForm({
 
   return (
     <form className="form-stack" onSubmit={submit}>
-      <div className="form-hero">
-        <div>
-          <div className="eyebrow">{editing ? "Editando" : "Nuevo cierre"}</div>
-          <h3>{editing ? "Actualiza y guarda" : "Registra el turno"}</h3>
-          <p>Completa, revisa el total y guarda.</p>
-        </div>
-        <div className="form-hero-card">
-          <span>Total reportado</span>
-          <strong>CRC {money(summary.totalReportado)}</strong>
-          <small>{movementCount} movimientos registrados</small>
-        </div>
+      <div className="form-progress-bar">
+        <span>{movementCount} movimientos</span>
+        <strong>CRC {money(summary.totalReportado)}</strong>
+      </div>
+
+      <div className="form-status-bar">
+        <span className="form-status-bar-title">
+          {editing ? "Editando cierre" : "Nuevo cierre"} — {movementCount} movimiento{movementCount !== 1 ? "s" : ""}
+        </span>
+        <span className="form-status-total">CRC {money(summary.totalReportado)}</span>
       </div>
 
       <FormSection
         index="01"
         title="Contexto del turno"
-        accent="#13315c"
+        accent="#ea580c"
       >
         <div className="field-grid field-grid-3">
           <TextField label="Fecha" type="date" value={form.fecha} onChange={(value) => setForm({ ...form, fecha: value })} />
-          <TextField label="Turno" value={form.turno} onChange={(value) => setForm({ ...form, turno: value })} placeholder="Numero de turno" />
+          <TextField label="Turno" value={form.turno} onChange={(value) => setForm({ ...form, turno: value })} placeholder="1, 2 o 3" />
           <TextField label="Datafono" value={form.datafono} onChange={(value) => setForm({ ...form, datafono: value })} placeholder="Codigo o referencia" />
           <MoneyField label="Efectivo" value={form.efectivo} onChange={(value) => setForm({ ...form, efectivo: value })} />
           <MoneyField label="Deposito" value={form.deposito} onChange={(value) => setForm({ ...form, deposito: value })} />
@@ -1013,7 +1022,7 @@ function CierreForm({
       ))}
 
       <FormSection
-        index="08"
+        index="07"
         title="Observaciones"
         accent="#475569"
       >
@@ -1187,7 +1196,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
             action={<button className="btn btn-ghost" type="button" onClick={load}>Actualizar</button>}
           >
             {loading ? (
-              <EmptyState title="Cargando" body="Consultando cierres." />
+              <HistorySkeleton />
             ) : cierres.length === 0 ? (
               <EmptyState title="Sin cierres" body="Aun no hay registros." />
             ) : (
