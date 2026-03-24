@@ -3,7 +3,7 @@ import "./app.css";
 
 const API_URL = "";
 const THEME_KEY = "cierre_theme";
-const EDITABLE_STATUSES = ["draft", "submitted", "observed"];
+const EDITABLE_STATUSES = ["submitted", "observed"];
 
 const VOUCHER_FIELDS = [
   { keyQty: "bcr_qty", keyAmount: "bcr_monto", label: "BCR", accent: "#ff9f1a" },
@@ -12,7 +12,6 @@ const VOUCHER_FIELDS = [
   { keyQty: "versatec_qty", keyAmount: "versatec_monto", label: "Versatec", accent: "#d94b4b" },
   { keyQty: "fleet_bncr_qty", keyAmount: "fleet_bncr_monto", label: "Fleet BNCR", accent: "#6c63ff" },
   { keyQty: "fleet_dav_qty", keyAmount: "fleet_dav_monto", label: "Fleet DAV", accent: "#0ea5a4" },
-  { keyQty: "bncr_qty", keyAmount: "bncr_monto", label: "BNCR", accent: "#475569" },
 ];
 
 const MOVEMENT_SECTIONS = [
@@ -24,7 +23,6 @@ const MOVEMENT_SECTIONS = [
     accent: "#6c63ff",
     addLabel: "Agregar credito",
     fields: [
-      { key: "descripcion", label: "Detalle", placeholder: "ej. venta a credito", span: 2 },
       { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
       { key: "referencia", label: "Referencia", placeholder: "Factura, placa o nota" },
       { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
@@ -38,7 +36,6 @@ const MOVEMENT_SECTIONS = [
     accent: "#0f9d76",
     addLabel: "Agregar SINPE",
     fields: [
-      { key: "descripcion", label: "Detalle", placeholder: "ej. SINPE cliente", span: 2 },
       { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
       { key: "referencia", label: "Comprobante", placeholder: "Numero o referencia" },
       { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
@@ -81,7 +78,6 @@ const REVIEW_STATUS_OPTIONS = [
 ];
 
 const STATUS_META = {
-  draft: { label: "Borrador", tone: "slate" },
   submitted: { label: "Enviado", tone: "amber" },
   observed: { label: "Observado", tone: "rose" },
   document_reviewed: { label: "Revisado", tone: "teal" },
@@ -146,7 +142,7 @@ function parseAmount(value) {
   if (value === null || value === undefined || value === "") return 0;
   const normalized = String(value).replace(/,/g, "");
   const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
 }
 
 function money(value) {
@@ -233,15 +229,12 @@ function emptyForm(defaultTurno = "1") {
       fleet_bncr_monto: "",
       fleet_dav_qty: "",
       fleet_dav_monto: "",
-      bncr_qty: "",
-      bncr_monto: "",
     },
     creditos: [],
     sinpes: [],
-    deposito: "",
+    depositos: [],
     vales: [],
     pagos: [],
-    efectivo: "",
     observaciones: "",
     employee_id: null,
   };
@@ -256,26 +249,23 @@ function summarizePayload(payload) {
 
   const totalCreditos = sumItems(payload?.creditos);
   const totalSinpes = sumItems(payload?.sinpes);
+  const totalDepositos = sumItems(payload?.depositos);
   const totalVales = sumItems(payload?.vales);
   const totalPagos = sumItems(payload?.pagos);
-  const deposito = parseAmount(payload?.deposito);
-  const efectivo = parseAmount(payload?.efectivo);
 
   return {
     totalVouchers: vouchers,
     totalCreditos,
     totalSinpes,
+    totalDepositos,
     totalVales,
     totalPagos,
-    deposito,
-    efectivo,
     totalReportado:
       vouchers +
       totalCreditos +
       totalSinpes +
-      deposito +
-      efectivo -
-      totalVales -
+      totalDepositos +
+      totalVales +
       totalPagos,
   };
 }
@@ -286,10 +276,9 @@ function normalizeSummary(summary) {
     totalVouchers: parseAmount(summary.totalVouchers ?? summary.total_vouchers),
     totalCreditos: parseAmount(summary.totalCreditos ?? summary.total_creditos),
     totalSinpes: parseAmount(summary.totalSinpes ?? summary.total_sinpes),
+    totalDepositos: parseAmount(summary.totalDepositos ?? summary.total_depositos),
     totalVales: parseAmount(summary.totalVales ?? summary.total_vales),
     totalPagos: parseAmount(summary.totalPagos ?? summary.total_pagos),
-    deposito: parseAmount(summary.deposito),
-    efectivo: parseAmount(summary.efectivo),
     totalReportado: parseAmount(summary.totalReportado ?? summary.total_reportado),
   };
 }
@@ -448,12 +437,66 @@ function MoneyField({ label, hint, value, onChange, placeholder = "0.00" }) {
           type="text"
           inputMode="decimal"
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          onChange={(event) => onChange(event.target.value.replace(/-/g, ""))}
           placeholder={placeholder}
         />
       </div>
     </FieldShell>
   );
+}
+
+function DepositListEditor({ deposits, setDeposits }) {
+  const subtotal = useMemo(
+    () => (deposits || []).reduce((acc, d) => acc + parseAmount(d.monto_reportado), 0),
+    [deposits],
+  );
+  const addDeposit = () => setDeposits([...(deposits || []), { id: crypto.randomUUID(), referencia: "", monto_reportado: "" }]);
+  const updateDeposit = (index, key, value) => setDeposits(deposits.map((d, i) => (i === index ? { ...d, [key]: value } : d)));
+  const removeDeposit = (index) => setDeposits(deposits.filter((_, i) => i !== index));
+
+  return (
+    <div className="deposit-editor">
+      {deposits.map((dep, index) => (
+        <div key={dep.id || index} className="deposit-item">
+          <TextField
+            label={`Deposito #${index + 1}`}
+            value={dep.referencia || ""}
+            onChange={(v) => updateDeposit(index, "referencia", v)}
+            placeholder="ID del comprobante"
+          />
+          <MoneyField
+            label="Monto"
+            value={dep.monto_reportado || ""}
+            onChange={(v) => updateDeposit(index, "monto_reportado", v)}
+          />
+          <button className="btn btn-ghost-danger" type="button" onClick={() => removeDeposit(index)}>
+            Quitar
+          </button>
+        </div>
+      ))}
+      <button className="btn-add-movement" type="button" onClick={addDeposit}>
+        + Agregar deposito
+      </button>
+      {deposits.length > 0 && (
+        <div className="inline-total inline-total-muted">
+          <span>Subtotal depositos</span>
+          <strong>CRC {money(subtotal)}</strong>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function remainingEditTime(cierre) {
+  if (!cierre?.editable_until) return null;
+  const until = new Date(cierre.editable_until);
+  if (Number.isNaN(until.getTime())) return null;
+  const remaining = until.getTime() - Date.now();
+  if (remaining <= 0) return null;
+  const hours = Math.floor(remaining / 3600000);
+  const minutes = Math.floor((remaining % 3600000) / 60000);
+  if (hours > 0) return `${hours}h ${minutes}m restantes`;
+  return `${minutes}m restantes`;
 }
 
 function SelectField({ label, hint, value, onChange, children }) {
@@ -507,10 +550,9 @@ function SummaryBoard({ payload, summary, compact = false }) {
     { label: "Vouchers", value: totals.totalVouchers, tone: "amber" },
     { label: "Creditos", value: totals.totalCreditos, tone: "indigo" },
     { label: "SINPE movil", value: totals.totalSinpes, tone: "emerald" },
-    { label: "Deposito", value: totals.deposito, tone: "navy" },
-    { label: "Efectivo", value: totals.efectivo, tone: "teal" },
-    { label: "Vales", value: totals.totalVales, tone: "rust", negative: true },
-    { label: "Pagos", value: totals.totalPagos, tone: "rose", negative: true },
+    { label: "Depositos", value: totals.totalDepositos, tone: "navy" },
+    { label: "Vales", value: totals.totalVales, tone: "rust" },
+    { label: "Pagos", value: totals.totalPagos, tone: "rose" },
   ];
 
   return (
@@ -522,8 +564,7 @@ function SummaryBoard({ payload, summary, compact = false }) {
               <span className={cx("summary-dot", `summary-${row.tone}`)} />
               <span>{row.label}</span>
             </div>
-            <strong className={cx("summary-row-value", row.negative && row.value > 0 && "summary-negative")}>
-              {row.negative && row.value > 0 ? "-" : ""}
+            <strong className="summary-row-value">
               CRC {money(row.value)}
             </strong>
           </div>
@@ -717,6 +758,13 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
     value: `CRC ${money(item.amount)}`,
   }));
 
+  const depositos = (payload.depositos || []).map((item, index) => ({
+    id: item.id || `dep-${index}`,
+    title: item.referencia || `Deposito ${index + 1}`,
+    meta: item.referencia ? `ID: ${item.referencia}` : "Sin ID",
+    value: `CRC ${money(item.monto_reportado)}`,
+  }));
+
   const movementGroups = [
     { title: "Creditos", accent: "#6c63ff", items: payload.creditos || [] },
     { title: "SINPE movil", accent: "#0f9d76", items: payload.sinpes || [] },
@@ -765,6 +813,7 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
 
       <div className="detail-grid">
         <DetailList title="Vouchers" accent="#ff9f1a" items={vouchers} />
+        {depositos.length > 0 && <DetailList title="Depositos" accent="#13315c" items={depositos} />}
         {movementGroups.map((group) => (
           <DetailList key={group.title} title={group.title} accent={group.accent} items={group.items} />
         ))}
@@ -793,17 +842,16 @@ function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, chil
       <div className="shell-frame">
         <header className="shell-topbar">
           <div className="brand-lockup">
-            <div className="brand-mark">LM</div>
+            <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="brand-logo" />
             <div>
               <div className="brand-kicker">Servicentro La Marina</div>
-              <div className="brand-title">Cierre central</div>
+              <div className="brand-title">Cierre de caja</div>
             </div>
           </div>
 
           <div className="shell-copy">
             <div className="eyebrow">{title}</div>
             <h1>{user.full_name}</h1>
-            <p>{subtitle}</p>
           </div>
 
           <div className="shell-actions">
@@ -854,24 +902,15 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
 
       <div className="auth-grid">
         <section className="auth-brand">
-          <div className="brand-lockup brand-lockup-large">
-            <div className="brand-mark">LM</div>
-            <div>
-              <div className="brand-kicker">Servicentro La Marina</div>
-              <div className="brand-title">Cierre central</div>
-            </div>
-          </div>
-
-          <div className="auth-brand-copy">
-            <div className="eyebrow">Acceso rapido</div>
-            <h1>Captura clara, moderna y sin ruido.</h1>
-            <p>Entra y empieza a trabajar.</p>
+          <div className="auth-brand-hero">
+            <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="auth-logo" />
+            <h1>Cierre de Caja</h1>
+            <p className="auth-brand-subtitle">Servicentro La Marina</p>
           </div>
 
           <div className="auth-brand-panel">
             <span>Hoy</span>
             <strong>{today}</strong>
-            <small>Lista para escritorio y movil.</small>
           </div>
         </section>
 
@@ -933,11 +972,12 @@ function CierreForm({
   defaultTurno = "1",
   editing = false,
   saving = false,
+  limitReached = false,
 }) {
   const summary = useMemo(() => summarizePayload(form), [form]);
   const movementCount = useMemo(
     () =>
-      ["creditos", "sinpes", "vales", "pagos"].reduce(
+      ["creditos", "sinpes", "depositos", "vales", "pagos"].reduce(
         (total, key) => total + (form[key] || []).length,
         0,
       ),
@@ -979,8 +1019,6 @@ function CierreForm({
           <TextField label="Fecha" type="date" value={form.fecha} onChange={(value) => setForm({ ...form, fecha: value })} />
           <TextField label="Turno" value={form.turno} onChange={(value) => setForm({ ...form, turno: value })} placeholder="1, 2 o 3" />
           <TextField label="Datafono" value={form.datafono} onChange={(value) => setForm({ ...form, datafono: value })} placeholder="Codigo o referencia" />
-          <MoneyField label="Efectivo" value={form.efectivo} onChange={(value) => setForm({ ...form, efectivo: value })} />
-          <MoneyField label="Deposito" value={form.deposito} onChange={(value) => setForm({ ...form, deposito: value })} />
           {canChooseEmployee ? (
             <SelectField
               label="Empleado"
@@ -1002,6 +1040,10 @@ function CierreForm({
             </div>
           )}
         </div>
+        <DepositListEditor
+          deposits={form.depositos || []}
+          setDeposits={(depositos) => setForm({ ...form, depositos })}
+        />
       </FormSection>
 
       <FormSection
@@ -1038,8 +1080,8 @@ function CierreForm({
         <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyForm(defaultTurno))} disabled={saving}>
           Limpiar
         </button>
-        <button className="btn btn-primary" type="submit" disabled={saving}>
-          {saving ? "Guardando..." : editing ? "Guardar cambios" : "Guardar cierre"}
+        <button className="btn btn-primary" type="submit" disabled={saving || limitReached}>
+          {saving ? "Guardando..." : limitReached ? "Limite alcanzado" : editing ? "Guardar cambios" : "Guardar cierre"}
         </button>
       </div>
     </form>
@@ -1053,6 +1095,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
+  const [cierreCountForDate, setCierreCountForDate] = useState(0);
 
   const load = async () => {
     setLoading(true);
@@ -1070,6 +1113,14 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
     load();
   }, [token]);
 
+  useEffect(() => {
+    if (draft.fecha && /^\d{4}-\d{2}-\d{2}$/.test(draft.fecha)) {
+      api(`/api/cierres/count?fecha=${draft.fecha}`, {}, token)
+        .then(data => setCierreCountForDate(data.count))
+        .catch(() => setCierreCountForDate(0));
+    }
+  }, [draft.fecha, token]);
+
   const startNew = () => {
     setEditing(null);
     setDraft(emptyForm(user.default_turno));
@@ -1078,9 +1129,11 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
 
   const startEdit = (cierre) => {
     setEditing(cierre);
+    const payload = cierre.reportado_json || {};
     setDraft({
       ...emptyForm(user.default_turno),
-      ...cierre.reportado_json,
+      ...payload,
+      depositos: payload.depositos || [],
       employee_id: cierre.employee_id || null,
     });
     setMessage(null);
@@ -1090,6 +1143,11 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
     const validationError = validateCierrePayload(payload);
     if (validationError) {
       setMessage({ tone: "error", text: validationError });
+      return;
+    }
+
+    if (!editing && cierreCountForDate >= 3) {
+      setMessage({ tone: "error", text: "Ya existen 3 cierres para esta fecha. No se pueden crear mas." });
       return;
     }
 
@@ -1120,7 +1178,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
         (acc, cierre) => {
           acc.total += 1;
           if (cierre.status === "approved") acc.approved += 1;
-          if (["draft", "submitted", "observed", "document_reviewed"].includes(cierre.status)) acc.pending += 1;
+          if (["submitted", "observed", "document_reviewed"].includes(cierre.status)) acc.pending += 1;
           return acc;
         },
         { total: 0, approved: 0, pending: 0 },
@@ -1132,7 +1190,6 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
     <AppShell
       user={user}
       title="Panel de empleado"
-      subtitle="Tu cierre y tu historial, en una sola vista."
       onLogout={onLogout}
       isDark={isDark}
       onToggleTheme={onToggleTheme}
@@ -1145,6 +1202,9 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
       </div>
 
       {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+      {!editing && cierreCountForDate >= 3 ? (
+        <Banner tone="warning">Ya tienes 3 cierres registrados para {formatDateLabel(draft.fecha)}. No puedes crear mas en esta fecha.</Banner>
+      ) : null}
 
       <div className="dashboard-grid">
         <div className="stack">
@@ -1166,6 +1226,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
               defaultTurno={user.default_turno || "1"}
               editing={Boolean(editing)}
               saving={saving}
+              limitReached={!editing && cierreCountForDate >= 3}
             />
           </Panel>
         </div>
@@ -1203,6 +1264,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
               <div className="history-list">
                 {cierres.map((cierre) => {
                   const canEdit = canEditCierre(cierre);
+                  const editTime = remainingEditTime(cierre);
                   return (
                     <div className="history-card" key={cierre.id}>
                       <div className="history-card-main">
@@ -1215,6 +1277,8 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
                           {cierre.audit_notes ? ` / ${cierre.audit_notes}` : ""}
                         </p>
                         <span className="history-total">CRC {money(cierre.resumen_reportado?.total_reportado)}</span>
+                        {editTime ? <span className="edit-time-badge">{editTime}</span> : null}
+                        {!canEdit && !editTime ? <span className="edit-time-expired">Edicion cerrada</span> : null}
                       </div>
                       {canEdit ? <button className="btn btn-secondary" type="button" onClick={() => startEdit(cierre)}>Editar</button> : null}
                     </div>
@@ -1229,13 +1293,14 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   );
 }
 
-function ReviewPanel({ token }) {
+function ReviewPanel({ token, employees = [] }) {
   const [cierres, setCierres] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [notes, setNotes] = useState("");
   const [status, setStatus] = useState("document_reviewed");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
@@ -1264,10 +1329,21 @@ function ReviewPanel({ token }) {
           cierre.empleado?.toLowerCase().includes(query.toLowerCase()) ||
           String(cierre.fecha).includes(query);
         const matchesStatus = statusFilter === "all" || cierre.status === statusFilter;
-        return matchesQuery && matchesStatus;
+        const matchesEmployee = employeeFilter === "all" || String(cierre.employee_id) === employeeFilter;
+        return matchesQuery && matchesStatus && matchesEmployee;
       }),
-    [cierres, query, statusFilter],
+    [cierres, query, statusFilter, employeeFilter],
   );
+
+  const employeeStats = useMemo(() => {
+    if (employeeFilter === "all") return null;
+    const empCierres = cierres.filter((c) => String(c.employee_id) === employeeFilter);
+    const total = empCierres.length;
+    const totalReportado = empCierres.reduce((sum, c) => sum + (c.resumen_reportado?.total_reportado || 0), 0);
+    const pending = empCierres.filter((c) => ["submitted", "observed", "document_reviewed"].includes(c.status)).length;
+    const approved = empCierres.filter((c) => c.status === "approved").length;
+    return { total, totalReportado, pending, approved };
+  }, [cierres, employeeFilter]);
 
   useEffect(() => {
     if (!filtered.length) {
@@ -1334,7 +1410,26 @@ function ReviewPanel({ token }) {
               </option>
             ))}
           </SelectField>
+          {employees.length > 0 ? (
+            <SelectField label="Empleado" value={employeeFilter} onChange={setEmployeeFilter}>
+              <option value="all">Todos</option>
+              {employees.map((emp) => (
+                <option key={emp.id} value={String(emp.id)}>
+                  {emp.full_name}
+                </option>
+              ))}
+            </SelectField>
+          ) : null}
         </div>
+
+        {employeeStats ? (
+          <div className="employee-stats-row">
+            <span className="meta-chip">Cierres: {employeeStats.total}</span>
+            <span className="meta-chip">Pendientes: {employeeStats.pending}</span>
+            <span className="meta-chip">Aprobados: {employeeStats.approved}</span>
+            <span className="meta-chip">Total: CRC {money(employeeStats.totalReportado)}</span>
+          </div>
+        ) : null}
 
         {loading ? (
           <EmptyState title="Cargando" body="Consultando cierres." />
@@ -1560,7 +1655,7 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
     <AppShell
       user={user}
       title={user.role === "admin" ? "Centro de control" : "Panel de supervision"}
-      subtitle="Revision y conciliacion desde un solo lugar."
+      subtitle=""
       onLogout={onLogout}
       isDark={isDark}
       onToggleTheme={onToggleTheme}
@@ -1580,7 +1675,7 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
         </button>
       </div>
 
-      {tab === "review" ? <ReviewPanel token={token} /> : <GasproPanel token={token} />}
+      {tab === "review" ? <ReviewPanel token={token} employees={employees} /> : <GasproPanel token={token} />}
     </AppShell>
   );
 }

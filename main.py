@@ -42,10 +42,9 @@ VOUCHER_AMOUNT_KEYS = [
     "versatec_monto",
     "fleet_bncr_monto",
     "fleet_dav_monto",
-    "bncr_monto",
 ]
-MOVEMENT_FIELDS = ("creditos", "sinpes", "transferencias", "vales", "pagos")
-EDITABLE_EMPLOYEE_STATUSES = {"draft", "submitted", "observed"}
+MOVEMENT_FIELDS = ("creditos", "sinpes", "depositos", "vales", "pagos")
+EDITABLE_EMPLOYEE_STATUSES = {"submitted", "observed"}
 PRODUCT_ALIASES = {
     "s": "super",
     "super": "super",
@@ -97,8 +96,6 @@ class VouchersModel(BaseModel):
     fleet_bncr_monto: Optional[str] = ""
     fleet_dav_qty: Optional[str] = ""
     fleet_dav_monto: Optional[str] = ""
-    bncr_qty: Optional[str] = ""
-    bncr_monto: Optional[str] = ""
 
 
 class MovementItem(BaseModel):
@@ -123,11 +120,9 @@ class CierrePayload(BaseModel):
     vouchers: VouchersModel = Field(default_factory=VouchersModel)
     creditos: List[MovementItem] = Field(default_factory=list)
     sinpes: List[MovementItem] = Field(default_factory=list)
-    transferencias: List[MovementItem] = Field(default_factory=list)
-    deposito: Optional[str] = ""
+    depositos: List[MovementItem] = Field(default_factory=list)
     vales: List[MovementItem] = Field(default_factory=list)
     pagos: List[MovementItem] = Field(default_factory=list)
-    efectivo: Optional[str] = ""
     observaciones: Optional[str] = ""
     employee_id: Optional[int] = None
 
@@ -240,7 +235,7 @@ def normalize_movement(item: Dict[str, Any], movement_type: str) -> Dict[str, An
         "estado": item.get("estado", "reportado"),
         "observacion_empleado": item.get("observacion_empleado", item.get("observacion", "")) or "",
         "observacion_supervisor": item.get("observacion_supervisor", "") or "",
-        "soporte_requerido": bool(item.get("soporte_requerido", movement_type in {"sinpes", "transferencias", "vales"})),
+        "soporte_requerido": bool(item.get("soporte_requerido", movement_type in {"sinpes", "depositos", "vales"})),
         "validado_por": item.get("validado_por"),
         "validado_at": item.get("validado_at"),
     }
@@ -258,15 +253,12 @@ def default_payload() -> Dict[str, Any]:
             "versatec_qty": "", "versatec_monto": "",
             "fleet_bncr_qty": "", "fleet_bncr_monto": "",
             "fleet_dav_qty": "", "fleet_dav_monto": "",
-            "bncr_qty": "", "bncr_monto": "",
         },
         "creditos": [],
         "sinpes": [],
-        "transferencias": [],
-        "deposito": "",
+        "depositos": [],
         "vales": [],
         "pagos": [],
-        "efectivo": "",
         "observaciones": "",
     }
 
@@ -287,8 +279,6 @@ def normalize_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 
     payload["turno"] = str(data.get("turno", payload["turno"]) or payload["turno"]).strip() or payload["turno"]
     payload["datafono"] = str(data.get("datafono", payload["datafono"]) or "").strip()
-    payload["deposito"] = str(data.get("deposito", payload["deposito"]) or "").strip()
-    payload["efectivo"] = str(data.get("efectivo", payload["efectivo"]) or "").strip()
     payload["observaciones"] = str(data.get("observaciones", payload["observaciones"]) or "").strip()
 
     vouchers = data.get("vouchers") or {}
@@ -317,18 +307,14 @@ def compute_summary(payload: Dict[str, Any], validated: bool = False) -> Dict[st
                 amount = parse_decimal(item.get("monto_reportado", 0))
             subtotal += amount
         totals[field] = subtotal
-    deposito = parse_decimal(payload.get("deposito"))
-    efectivo = parse_decimal(payload.get("efectivo"))
-    total_reportado = total_vouchers + totals["creditos"] + totals["sinpes"] + totals["transferencias"] + deposito + efectivo - totals["vales"] - totals["pagos"]
+    total_reportado = total_vouchers + totals["creditos"] + totals["sinpes"] + totals["depositos"] + totals["vales"] + totals["pagos"]
     return {
         "total_vouchers": decimal_to_float(total_vouchers),
         "total_creditos": decimal_to_float(totals["creditos"]),
         "total_sinpes": decimal_to_float(totals["sinpes"]),
-        "total_transferencias": decimal_to_float(totals["transferencias"]),
+        "total_depositos": decimal_to_float(totals["depositos"]),
         "total_vales": decimal_to_float(totals["vales"]),
         "total_pagos": decimal_to_float(totals["pagos"]),
-        "deposito": decimal_to_float(deposito),
-        "efectivo": decimal_to_float(efectivo),
         "total_reportado": decimal_to_float(total_reportado),
     }
 
@@ -481,8 +467,8 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
                 status, json.dumps(reportado_payload), json.dumps(validado_payload), json.dumps(resumen_reportado), json.dumps(resumen_validado),
                 current_user["id"], current_user["id"], utcnow(), editable_until, utcnow(),
                 decimal_to_float(v.get("bcr_monto")), decimal_to_float(v.get("bac_monto")), decimal_to_float(v.get("bac_flotas_monto")), decimal_to_float(v.get("versatec_monto")),
-                decimal_to_float(v.get("fleet_bncr_monto")), decimal_to_float(v.get("fleet_dav_monto")), decimal_to_float(v.get("bncr_monto")),
-                creditos_text, sinpes_text, decimal_to_float(reportado_payload["deposito"]), vales_text, pagos_text, decimal_to_float(reportado_payload["efectivo"]), resumen_reportado["total_reportado"], utcnow(),
+                decimal_to_float(v.get("fleet_bncr_monto")), decimal_to_float(v.get("fleet_dav_monto")), 0,
+                creditos_text, sinpes_text, 0, vales_text, pagos_text, 0, resumen_reportado["total_reportado"], utcnow(),
             ),
         )
         cierre_id = cur.fetchone()[0]
@@ -526,8 +512,8 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
                 status, json.dumps(reportado_payload), json.dumps(validado_payload), json.dumps(resumen_reportado), json.dumps(resumen_validado),
                 current_user["id"], editable_until, utcnow(),
                 decimal_to_float(v.get("bcr_monto")), decimal_to_float(v.get("bac_monto")), decimal_to_float(v.get("bac_flotas_monto")), decimal_to_float(v.get("versatec_monto")),
-                decimal_to_float(v.get("fleet_bncr_monto")), decimal_to_float(v.get("fleet_dav_monto")), decimal_to_float(v.get("bncr_monto")),
-                creditos_text, sinpes_text, decimal_to_float(reportado_payload["deposito"]), vales_text, pagos_text, decimal_to_float(reportado_payload["efectivo"]), resumen_reportado["total_reportado"], cierre_id,
+                decimal_to_float(v.get("fleet_bncr_monto")), decimal_to_float(v.get("fleet_dav_monto")), 0,
+                creditos_text, sinpes_text, 0, vales_text, pagos_text, 0, resumen_reportado["total_reportado"], cierre_id,
             ),
         )
         save_audit_log(db, cierre_id, current_user["id"], "updated", {"status": status})
@@ -681,7 +667,7 @@ def fill_cierre_in_sheet(ws, cierre: Dict[str, Any], validated: bool = True):
     ws[f"C{base+3}"] = products.get("glp", {}).get("litros", 0)
     ws[f"J{base+8}"] = summary.get("total_creditos", 0)
     ws[f"J{base+9}"] = summary.get("deposito", 0)
-    ws[f"J{base+10}"] = summary.get("total_sinpes", 0) + summary.get("total_transferencias", 0)
+    ws[f"J{base+10}"] = summary.get("total_sinpes", 0)
     ws[f"J{base+11}"] = summary.get("total_pagos", 0)
     ws[f"J{base+12}"] = summary.get("total_vales", 0)
     ws[f"D{base+13}"] = cierre.get("empleado")
@@ -800,8 +786,25 @@ def update_user(user_id: int, payload: UserUpdate, _: dict = Depends(require_rol
 @app.post("/api/cierres")
 def create_cierre(payload: CierrePayload, user=Depends(get_current_user), db=Depends(get_db)):
     employee_id = payload.employee_id if user["role"] in {"admin", "supervisor"} and payload.employee_id else user["id"]
-    cierre_id = persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, employee_id=employee_id, status="submitted")
+    cur = db.cursor()
+    cur.execute("SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s", (employee_id, payload.fecha))
+    if cur.fetchone()[0] >= 3:
+        raise HTTPException(status_code=409, detail="Ya existen 3 cierres para este empleado en esta fecha.")
+    try:
+        cierre_id = persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, employee_id=employee_id, status="submitted")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar el cierre: {str(exc)}") from exc
     return {"id": cierre_id, "status": "ok"}
+
+
+@app.get("/api/cierres/count")
+def count_cierres_for_date(fecha: str, user=Depends(get_current_user), db=Depends(get_db)):
+    cur = db.cursor()
+    cur.execute("SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s", (user["id"], fecha))
+    return {"count": cur.fetchone()[0], "max": 3}
 
 
 @app.get("/api/cierres")
@@ -844,7 +847,13 @@ def update_cierre(cierre_id: int, payload: CierrePayload, user=Depends(get_curre
     cierre = get_cierre_or_404(db, cierre_id)
     assert_can_edit_cierre(cierre, user)
     employee_id = payload.employee_id if user["role"] in {"admin", "supervisor"} and payload.employee_id else cierre.get("employee_id")
-    persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, cierre_id=cierre_id, employee_id=employee_id, status=cierre["status"] if user["role"] == "employee" else "submitted")
+    try:
+        persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, cierre_id=cierre_id, employee_id=employee_id, status=cierre["status"] if user["role"] == "employee" else "submitted")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al actualizar el cierre: {str(exc)}") from exc
     return {"ok": True, "id": cierre_id}
 
 
