@@ -3,7 +3,8 @@ import "./app.css";
 
 const API_URL = "";
 const THEME_KEY = "cierre_theme";
-const EDITABLE_STATUSES = ["submitted", "observed"];
+const CRC_SYMBOL = "\u20A1";
+const EDITABLE_STATUSES = ["submitted"];
 
 const VOUCHER_FIELDS = [
   { keyQty: "bcr_qty", keyAmount: "bcr_monto", label: "BCR", accent: "#ff9f1a" },
@@ -21,6 +22,7 @@ const MOVEMENT_SECTIONS = [
     title: "Creditos",
     subtitle: "",
     accent: "#6c63ff",
+    layout: "detailed",
     addLabel: "Agregar credito",
     fields: [
       { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
@@ -34,12 +36,10 @@ const MOVEMENT_SECTIONS = [
     title: "SINPE movil",
     subtitle: "",
     accent: "#0f9d76",
+    layout: "compact",
     addLabel: "Agregar SINPE",
-    fields: [
-      { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
-      { key: "referencia", label: "Comprobante", placeholder: "Numero o referencia" },
-      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
-    ],
+    entryLabel: "Comprobante",
+    entryPlaceholder: "Numero o referencia bancaria",
   },
   {
     key: "vales",
@@ -47,13 +47,10 @@ const MOVEMENT_SECTIONS = [
     title: "Vales",
     subtitle: "",
     accent: "#d97706",
+    layout: "compact",
     addLabel: "Agregar vale",
-    fields: [
-      { key: "descripcion", label: "Detalle", placeholder: "ej. combustible interno", span: 2 },
-      { key: "cliente", label: "Beneficiario", placeholder: "Persona o cuenta" },
-      { key: "referencia", label: "Referencia", placeholder: "Placa, finca o nota" },
-      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
-    ],
+    entryLabel: "Comprobante o detalle",
+    entryPlaceholder: "Numero de vale o referencia",
   },
   {
     key: "pagos",
@@ -61,29 +58,30 @@ const MOVEMENT_SECTIONS = [
     title: "Pagos realizados",
     subtitle: "",
     accent: "#d94b4b",
+    layout: "compact",
     addLabel: "Agregar pago",
-    fields: [
-      { key: "descripcion", label: "Detalle", placeholder: "ej. pago de proveedor", span: 2 },
-      { key: "cliente", label: "A quien", placeholder: "Nombre o empresa" },
-      { key: "referencia", label: "Referencia", placeholder: "Motivo o comprobante" },
-      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
-    ],
+    entryLabel: "Comprobante o motivo",
+    entryPlaceholder: "Numero, motivo o referencia del pago",
   },
 ];
 
 const REVIEW_STATUS_OPTIONS = [
-  { value: "document_reviewed", label: "Revisado" },
-  { value: "observed", label: "Observado" },
-  { value: "approved", label: "Aprobado" },
+  { value: "submitted", label: "Devuelto con nota" },
+  { value: "validated", label: "Validado" },
 ];
 
 const STATUS_META = {
   submitted: { label: "Enviado", tone: "amber" },
-  observed: { label: "Observado", tone: "rose" },
-  document_reviewed: { label: "Revisado", tone: "teal" },
-  approved: { label: "Aprobado", tone: "emerald" },
+  validated: { label: "Validado", tone: "teal" },
   reconciled: { label: "Conciliado", tone: "indigo" },
 };
+
+function normalizeStatusValue(status) {
+  if (status === "observed") return "submitted";
+  if (status === "document_reviewed") return "validated";
+  if (status === "approved") return "validated";
+  return status || "submitted";
+}
 
 function detailMessage(detail) {
   if (!detail) return "";
@@ -138,9 +136,18 @@ function cx(...classes) {
   return classes.filter(Boolean).join(" ");
 }
 
+function sanitizeAmountInput(value) {
+  if (value === null || value === undefined) return "";
+  const cleaned = String(value).replace(/[^\d.,]/g, "").replace(/,/g, "");
+  if (!cleaned) return "";
+  const [whole = "", ...decimals] = cleaned.split(".");
+  if (!decimals.length) return whole;
+  return `${whole}.${decimals.join("").slice(0, 2)}`;
+}
+
 function parseAmount(value) {
-  if (value === null || value === undefined || value === "") return 0;
-  const normalized = String(value).replace(/,/g, "");
+  const normalized = sanitizeAmountInput(value);
+  if (!normalized) return 0;
   const parsed = Number(normalized);
   return Number.isFinite(parsed) ? Math.abs(parsed) : 0;
 }
@@ -150,6 +157,41 @@ function money(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(parseAmount(value));
+}
+
+function formatCurrencyInput(value) {
+  const normalized = sanitizeAmountInput(value);
+  if (!normalized) return "";
+  const [wholeRaw = "0", decimals = ""] = normalized.split(".");
+  const whole = Number(wholeRaw || "0");
+  const grouped = new Intl.NumberFormat("es-CR", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(whole);
+
+  if (normalized.endsWith(".") && !decimals) return `${CRC_SYMBOL} ${grouped}.`;
+  if (decimals) return `${CRC_SYMBOL} ${grouped}.${decimals}`;
+  return `${CRC_SYMBOL} ${grouped}`;
+}
+
+function movementAmountValue(item) {
+  return item?.monto ?? item?.monto_reportado ?? "";
+}
+
+function movementComprobanteValue(item) {
+  return [item?.comprobante, item?.referencia, item?.descripcion, item?.cliente].find(
+    (value) => String(value || "").trim(),
+  ) || "";
+}
+
+function movementDisplayLabel(item, fallbackLabel, index) {
+  return item?.descripcion || item?.cliente || movementComprobanteValue(item) || `${fallbackLabel} ${index + 1}`;
+}
+
+function movementMetaLabel(item) {
+  const parts = [item?.cliente, item?.referencia].filter((value) => String(value || "").trim());
+  if (parts.length) return parts.join(" / ");
+  return movementComprobanteValue(item) ? "Comprobante registrado" : "Sin detalle adicional";
 }
 
 function formatDateLabel(value) {
@@ -183,7 +225,7 @@ function isValidDateValue(value) {
 }
 
 function canEditCierre(cierre) {
-  if (!EDITABLE_STATUSES.includes(cierre?.status)) return false;
+  if (!EDITABLE_STATUSES.includes(normalizeStatusValue(cierre?.status))) return false;
   if (cierre?.document_reviewed_at || cierre?.reconciled_at) return false;
   if (!cierre?.editable_until) return false;
 
@@ -208,6 +250,14 @@ function emptyMovement() {
     monto_reportado: "",
     estado: "reportado",
     observacion_empleado: "",
+  };
+}
+
+function emptyCompactMovement() {
+  return {
+    id: crypto.randomUUID(),
+    comprobante: "",
+    monto: "",
   };
 }
 
@@ -245,7 +295,7 @@ function summarizePayload(payload) {
     (total, voucher) => total + parseAmount(payload?.vouchers?.[voucher.keyAmount]),
     0,
   );
-  const sumItems = (items) => (items || []).reduce((acc, item) => acc + parseAmount(item.monto_reportado), 0);
+  const sumItems = (items) => (items || []).reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0);
 
   const totalCreditos = sumItems(payload?.creditos);
   const totalSinpes = sumItems(payload?.sinpes);
@@ -344,7 +394,8 @@ function Banner({ tone = "success", children }) {
 }
 
 function StatusPill({ status }) {
-  const meta = STATUS_META[status] || { label: status || "Sin estado", tone: "slate" };
+  const normalizedStatus = normalizeStatusValue(status);
+  const meta = STATUS_META[normalizedStatus] || { label: normalizedStatus || "Sin estado", tone: "slate" };
   return <span className={cx("status-pill", `tone-${meta.tone}`)}>{meta.label}</span>;
 }
 
@@ -431,14 +482,14 @@ function MoneyField({ label, hint, value, onChange, placeholder = "0.00" }) {
   return (
     <FieldShell label={label} hint={hint}>
       <div className="money-input">
-        <span className="money-prefix">CRC</span>
+        <span className="money-prefix">{CRC_SYMBOL}</span>
         <input
           className="field-input field-input-plain"
           type="text"
           inputMode="decimal"
-          value={value}
-          onChange={(event) => onChange(event.target.value.replace(/-/g, ""))}
-          placeholder={placeholder}
+          value={formatCurrencyInput(value)}
+          onChange={(event) => onChange(sanitizeAmountInput(event.target.value))}
+          placeholder={`${CRC_SYMBOL} ${placeholder}`}
         />
       </div>
     </FieldShell>
@@ -610,7 +661,7 @@ function VoucherGrid({ vouchers, setVoucher }) {
                     type="text"
                     inputMode="numeric"
                     value={vouchers[voucher.keyQty] || ""}
-                    onChange={(e) => setVoucher(voucher.keyQty, e.target.value)}
+                    onChange={(e) => setVoucher(voucher.keyQty, e.target.value.replace(/\D/g, ""))}
                     placeholder="0"
                   />
                 </td>
@@ -619,9 +670,9 @@ function VoucherGrid({ vouchers, setVoucher }) {
                     className="field-input voucher-cell-input"
                     type="text"
                     inputMode="decimal"
-                    value={vouchers[voucher.keyAmount] || ""}
-                    onChange={(e) => setVoucher(voucher.keyAmount, e.target.value)}
-                    placeholder="0.00"
+                    value={formatCurrencyInput(vouchers[voucher.keyAmount] || "")}
+                    onChange={(e) => setVoucher(voucher.keyAmount, sanitizeAmountInput(e.target.value))}
+                    placeholder={`${CRC_SYMBOL} 0.00`}
                   />
                 </td>
               </tr>
@@ -639,7 +690,7 @@ function VoucherGrid({ vouchers, setVoucher }) {
 
 function MovementListEditor({ config, items, setItems }) {
   const subtotal = useMemo(
-    () => (items || []).reduce((acc, item) => acc + parseAmount(item.monto_reportado), 0),
+    () => (items || []).reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0),
     [items],
   );
 
@@ -723,6 +774,101 @@ function MovementListEditor({ config, items, setItems }) {
   );
 }
 
+function CompactMovementListEditor({ config, items, setItems }) {
+  const subtotal = useMemo(
+    () => (items || []).reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0),
+    [items],
+  );
+
+  const addItem = () => {
+    setItems([...(items || []), emptyCompactMovement()]);
+  };
+
+  const updateItem = (index, key, value) => {
+    setItems(
+      items.map((item, itemIndex) => {
+        if (itemIndex !== index) return item;
+        if (key === "comprobante") {
+          return { ...item, comprobante: value, referencia: value };
+        }
+        if (key === "monto") {
+          return { ...item, monto: value, monto_reportado: value };
+        }
+        return { ...item, [key]: value };
+      }),
+    );
+  };
+
+  const removeItem = (index) => {
+    setItems(items.filter((_, itemIndex) => itemIndex !== index));
+  };
+
+  return (
+    <FormSection
+      index={config.index}
+      title={config.title}
+      subtitle={config.subtitle}
+      accent={config.accent}
+      extra={items.length > 0 ? <span className="section-chip">{items.length} registros</span> : null}
+    >
+      {items.length === 0 ? (
+        <div className="empty-state-action">
+          <p>No hay {config.title.toLowerCase()} registrados en este turno.</p>
+          <button className="btn-add-movement" type="button" onClick={addItem}>
+            + {config.addLabel}
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="movement-stack">
+            {items.map((item, index) => (
+              <div className="movement-card movement-card-compact" key={item.id || index} style={{ "--section-accent": config.accent }}>
+                <div className="movement-card-head">
+                  <div>
+                    <strong>{config.title} #{index + 1}</strong>
+                    <span>Se guarda como comprobante y monto para exportacion.</span>
+                  </div>
+                  <button className="btn btn-ghost-danger" type="button" onClick={() => removeItem(index)}>
+                    Quitar
+                  </button>
+                </div>
+
+                <div className="movement-grid movement-grid-compact">
+                  <div className="movement-field movement-field-span-2">
+                    <TextField
+                      label={config.entryLabel}
+                      value={movementComprobanteValue(item)}
+                      onChange={(value) => updateItem(index, "comprobante", value)}
+                      placeholder={config.entryPlaceholder}
+                    />
+                  </div>
+                  <div className="movement-field movement-field-span-2">
+                    <MoneyField
+                      label="Monto"
+                      value={movementAmountValue(item)}
+                      onChange={(value) => updateItem(index, "monto", value)}
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="section-actions">
+            <button className="btn-add-movement" type="button" onClick={addItem}>
+              + {config.addLabel}
+            </button>
+            <div className="inline-total inline-total-muted">
+              <span>Subtotal</span>
+              <strong>CRC {money(subtotal)}</strong>
+            </div>
+          </div>
+        </>
+      )}
+    </FormSection>
+  );
+}
+
 function DetailList({ title, accent = "#ff9f1a", items }) {
   if (!items.length) return null;
 
@@ -775,9 +921,9 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
       ...group,
       items: group.items.map((item, index) => ({
         id: item.id || `${group.title}-${index}`,
-        title: item.descripcion || item.cliente || `${group.title} ${index + 1}`,
-        meta: [item.cliente, item.referencia].filter(Boolean).join(" / ") || "Sin detalle adicional",
-        value: `CRC ${money(item.monto_reportado)}`,
+        title: movementDisplayLabel(item, group.title, index),
+        meta: movementMetaLabel(item),
+        value: `CRC ${money(movementAmountValue(item))}`,
       })),
     }))
     .filter((group) => group.items.length > 0);
@@ -842,7 +988,7 @@ function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, chil
       <div className="shell-frame">
         <header className="shell-topbar">
           <div className="brand-lockup">
-            <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="brand-logo" />
+            <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="brand-logo logo-contain" />
             <div>
               <div className="brand-kicker">Servicentro La Marina</div>
               <div className="brand-title">Cierre de caja</div>
@@ -903,7 +1049,7 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
       <div className="auth-grid">
         <section className="auth-brand">
           <div className="auth-brand-hero">
-            <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="auth-logo" />
+            <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="auth-logo logo-contain" />
             <h1>Cierre de Caja</h1>
             <p className="auth-brand-subtitle">Servicentro La Marina</p>
           </div>
@@ -1055,12 +1201,21 @@ function CierreForm({
       </FormSection>
 
       {MOVEMENT_SECTIONS.map((section) => (
+        section.layout === "compact" ? (
+        <CompactMovementListEditor
+          key={section.key}
+          config={section}
+          items={form[section.key] || []}
+          setItems={(items) => setForm({ ...form, [section.key]: items })}
+        />
+        ) : (
         <MovementListEditor
           key={section.key}
           config={section}
           items={form[section.key] || []}
           setItems={(items) => setForm({ ...form, [section.key]: items })}
         />
+        )
       ))}
 
       <FormSection
@@ -1177,11 +1332,11 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
       cierres.reduce(
         (acc, cierre) => {
           acc.total += 1;
-          if (cierre.status === "approved") acc.approved += 1;
-          if (["submitted", "observed", "document_reviewed"].includes(cierre.status)) acc.pending += 1;
+          if (normalizeStatusValue(cierre.status) === "reconciled") acc.reconciled += 1;
+          if (["submitted", "validated"].includes(normalizeStatusValue(cierre.status))) acc.pending += 1;
           return acc;
         },
-        { total: 0, approved: 0, pending: 0 },
+        { total: 0, reconciled: 0, pending: 0 },
       ),
     [cierres],
   );
@@ -1197,7 +1352,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
       <div className="metric-grid">
         <MetricCard label="Cierres" value={statusCounts.total} caption="Tu historial" accent="#13315c" />
         <MetricCard label="Pendientes" value={statusCounts.pending} caption="Aun abiertos" accent="#ff9f1a" />
-        <MetricCard label="Aprobados" value={statusCounts.approved} caption="Listos" accent="#0f9d76" />
+        <MetricCard label="Conciliados" value={statusCounts.reconciled} caption="Listos" accent="#0f9d76" />
         <MetricCard label="En pantalla" value={`CRC ${money(summary.totalReportado)}`} caption={`Turno ${draft.turno || user.default_turno || "-"}`} accent="#2f6fed" />
       </div>
 
@@ -1293,17 +1448,19 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   );
 }
 
-function ReviewPanel({ token, employees = [] }) {
+function ReviewPanel({ token, user, employees = [] }) {
   const [cierres, setCierres] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [notes, setNotes] = useState("");
-  const [status, setStatus] = useState("document_reviewed");
+  const [status, setStatus] = useState("validated");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [message, setMessage] = useState(null);
+  const isAdmin = user?.role === "admin";
 
   const load = async () => {
     setLoading(true);
@@ -1328,7 +1485,7 @@ function ReviewPanel({ token, employees = [] }) {
           !query ||
           cierre.empleado?.toLowerCase().includes(query.toLowerCase()) ||
           String(cierre.fecha).includes(query);
-        const matchesStatus = statusFilter === "all" || cierre.status === statusFilter;
+        const matchesStatus = statusFilter === "all" || normalizeStatusValue(cierre.status) === statusFilter;
         const matchesEmployee = employeeFilter === "all" || String(cierre.employee_id) === employeeFilter;
         return matchesQuery && matchesStatus && matchesEmployee;
       }),
@@ -1340,9 +1497,9 @@ function ReviewPanel({ token, employees = [] }) {
     const empCierres = cierres.filter((c) => String(c.employee_id) === employeeFilter);
     const total = empCierres.length;
     const totalReportado = empCierres.reduce((sum, c) => sum + (c.resumen_reportado?.total_reportado || 0), 0);
-    const pending = empCierres.filter((c) => ["submitted", "observed", "document_reviewed"].includes(c.status)).length;
-    const approved = empCierres.filter((c) => c.status === "approved").length;
-    return { total, totalReportado, pending, approved };
+    const pending = empCierres.filter((c) => ["submitted", "validated"].includes(normalizeStatusValue(c.status))).length;
+    const reconciled = empCierres.filter((c) => normalizeStatusValue(c.status) === "reconciled").length;
+    return { total, totalReportado, pending, reconciled };
   }, [cierres, employeeFilter]);
 
   useEffect(() => {
@@ -1356,12 +1513,15 @@ function ReviewPanel({ token, employees = [] }) {
   }, [filtered, selectedId]);
 
   const selected = useMemo(() => cierres.find((cierre) => cierre.id === selectedId) || null, [cierres, selectedId]);
+  const selectedStatus = normalizeStatusValue(selected?.status);
 
   useEffect(() => {
     if (selected) {
       setNotes(selected.audit_notes || "");
       setStatus(
-        REVIEW_STATUS_OPTIONS.some((option) => option.value === selected.status) ? selected.status : "document_reviewed",
+        REVIEW_STATUS_OPTIONS.some((option) => option.value === normalizeStatusValue(selected.status))
+          ? normalizeStatusValue(selected.status)
+          : "validated",
       );
     }
   }, [selected]);
@@ -1389,6 +1549,21 @@ function ReviewPanel({ token, employees = [] }) {
       setMessage({ tone: "error", text: err.message });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const reconcileSelected = async () => {
+    if (!selected || !isAdmin || selectedStatus !== "validated") return;
+    setReconciling(true);
+    setMessage(null);
+    try {
+      await api(`/api/cierres/${selected.id}/reconcile`, { method: "POST" }, token);
+      setMessage({ tone: "success", text: "El cierre se concilio correctamente." });
+      await load();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setReconciling(false);
     }
   };
 
@@ -1426,7 +1601,7 @@ function ReviewPanel({ token, employees = [] }) {
           <div className="employee-stats-row">
             <span className="meta-chip">Cierres: {employeeStats.total}</span>
             <span className="meta-chip">Pendientes: {employeeStats.pending}</span>
-            <span className="meta-chip">Aprobados: {employeeStats.approved}</span>
+            <span className="meta-chip">Conciliados: {employeeStats.reconciled}</span>
             <span className="meta-chip">Total: CRC {money(employeeStats.totalReportado)}</span>
           </div>
         ) : null}
@@ -1499,9 +1674,14 @@ function ReviewPanel({ token, employees = [] }) {
             </div>
 
             <div className="form-submit-row">
-              <button className="btn btn-primary" type="button" onClick={submitReview} disabled={saving}>
+              <button className="btn btn-primary" type="button" onClick={submitReview} disabled={saving || reconciling}>
                 {saving ? "Guardando..." : "Guardar cambios"}
               </button>
+              {isAdmin && selectedStatus === "validated" ? (
+                <button className="btn btn-secondary" type="button" onClick={reconcileSelected} disabled={saving || reconciling}>
+                  {reconciling ? "Conciliando..." : "Conciliar"}
+                </button>
+              ) : null}
             </div>
           </div>
         ) : (
@@ -1644,6 +1824,7 @@ function GasproPanel({ token }) {
 function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [tab, setTab] = useState("review");
   const [employees, setEmployees] = useState([]);
+  const canAccessGaspro = user.role === "admin";
 
   useEffect(() => {
     api("/api/users?role=employee", {}, token)
@@ -1670,12 +1851,14 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
         <button className={cx("segmented-button", tab === "review" && "is-active")} type="button" onClick={() => setTab("review")}>
           Revision
         </button>
-        <button className={cx("segmented-button", tab === "gaspro" && "is-active")} type="button" onClick={() => setTab("gaspro")}>
-          Gaspro
-        </button>
+        {canAccessGaspro ? (
+          <button className={cx("segmented-button", tab === "gaspro" && "is-active")} type="button" onClick={() => setTab("gaspro")}>
+            Gaspro
+          </button>
+        ) : null}
       </div>
 
-      {tab === "review" ? <ReviewPanel token={token} employees={employees} /> : <GasproPanel token={token} />}
+      {tab === "review" ? <ReviewPanel token={token} user={user} employees={employees} /> : <GasproPanel token={token} />}
     </AppShell>
   );
 }

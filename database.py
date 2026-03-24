@@ -87,6 +87,39 @@ def ensure_column(cur, table: str, column: str, definition: str):
     cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def ensure_jsonb_column(cur, table: str, column: str, default_sql: str):
+    cur.execute(
+        """
+        SELECT data_type
+        FROM information_schema.columns
+        WHERE table_name = %s
+          AND column_name = %s
+        """,
+        (table, column),
+    )
+    row = cur.fetchone()
+    if not row:
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} JSONB NOT NULL DEFAULT {default_sql}")
+        return
+
+    if row[0] == "jsonb":
+        return
+
+    cur.execute(
+        f"""
+        ALTER TABLE {table}
+        ALTER COLUMN {column} TYPE JSONB
+        USING CASE
+            WHEN {column} IS NULL OR trim({column}::text) = '' THEN {default_sql}
+            ELSE {column}::jsonb
+        END
+        """
+    )
+    cur.execute(f"ALTER TABLE {table} ALTER COLUMN {column} SET DEFAULT {default_sql}")
+    cur.execute(f"UPDATE {table} SET {column} = {default_sql} WHERE {column} IS NULL")
+    cur.execute(f"ALTER TABLE {table} ALTER COLUMN {column} SET NOT NULL")
+
+
 def seed_users(cur):
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin1234")
     supervisor_password = os.environ.get("SUPERVISOR_PASSWORD", admin_password)
@@ -202,11 +235,11 @@ def init_db():
                 voucher_fleet_bncr NUMERIC DEFAULT 0,
                 voucher_fleet_dav NUMERIC DEFAULT 0,
                 voucher_bncr NUMERIC DEFAULT 0,
-                creditos_json TEXT DEFAULT '[]',
-                sinpes_json TEXT DEFAULT '[]',
+                creditos_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                sinpes_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                 deposito NUMERIC DEFAULT 0,
-                vales_json TEXT DEFAULT '[]',
-                pagos_json TEXT DEFAULT '[]',
+                vales_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+                pagos_json JSONB NOT NULL DEFAULT '[]'::jsonb,
                 efectivo NUMERIC DEFAULT 0,
                 total_reportado NUMERIC DEFAULT 0,
                 enviado_at TIMESTAMP DEFAULT NOW()
@@ -275,9 +308,37 @@ def init_db():
         ("gaspro_mode", "TEXT"),
         ("locked_at", "TIMESTAMP"),
         ("locked_reason", "TEXT"),
+        ("voucher_bcr", "NUMERIC DEFAULT 0"),
+        ("voucher_bac", "NUMERIC DEFAULT 0"),
+        ("voucher_bac_flotas", "NUMERIC DEFAULT 0"),
+        ("voucher_versatec", "NUMERIC DEFAULT 0"),
+        ("voucher_fleet_bncr", "NUMERIC DEFAULT 0"),
+        ("voucher_fleet_dav", "NUMERIC DEFAULT 0"),
+        ("voucher_bncr", "NUMERIC DEFAULT 0"),
+        ("creditos_json", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+        ("sinpes_json", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+        ("deposito", "NUMERIC DEFAULT 0"),
+        ("vales_json", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+        ("pagos_json", "JSONB NOT NULL DEFAULT '[]'::jsonb"),
+        ("efectivo", "NUMERIC DEFAULT 0"),
+        ("total_reportado", "NUMERIC DEFAULT 0"),
     )
     for column, definition in legacy_columns:
         ensure_column(cur, "cierres", column, definition)
+
+    jsonb_columns: Tuple[Tuple[str, str], ...] = (
+        ("reportado_json", "'{}'::jsonb"),
+        ("validado_json", "'{}'::jsonb"),
+        ("resumen_reportado", "'{}'::jsonb"),
+        ("resumen_validado", "'{}'::jsonb"),
+        ("gaspro_summary", "'{}'::jsonb"),
+        ("creditos_json", "'[]'::jsonb"),
+        ("sinpes_json", "'[]'::jsonb"),
+        ("vales_json", "'[]'::jsonb"),
+        ("pagos_json", "'[]'::jsonb"),
+    )
+    for column, default_sql in jsonb_columns:
+        ensure_jsonb_column(cur, "cierres", column, default_sql)
 
     seed_users(cur)
     cur.execute(

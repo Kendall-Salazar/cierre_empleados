@@ -228,8 +228,11 @@ button:disabled {
   width: 48px;
   height: 48px;
   border-radius: var(--radius-md);
-  object-fit: cover;
   flex-shrink: 0;
+}
+
+.logo-contain {
+  object-fit: contain;
 }
 
 .shell-actions,
@@ -467,7 +470,6 @@ button:disabled {
   width: 100px;
   height: 100px;
   border-radius: var(--radius-lg);
-  object-fit: cover;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
 }
 
@@ -939,8 +941,18 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.movement-grid-compact {
+  grid-template-columns: 1fr;
+}
+
 .movement-field-span-2 {
   grid-column: span 2;
+}
+
+.movement-card-compact {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--section-accent, var(--accent)) 8%, transparent) 0%, transparent 100%),
+    var(--surface);
 }
 
 /* ─── Empty States ───────────────────────────────────────── */

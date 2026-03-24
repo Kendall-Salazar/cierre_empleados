@@ -44,7 +44,9 @@ VOUCHER_AMOUNT_KEYS = [
     "fleet_dav_monto",
 ]
 MOVEMENT_FIELDS = ("creditos", "sinpes", "depositos", "vales", "pagos")
-EDITABLE_EMPLOYEE_STATUSES = {"submitted", "observed"}
+COMPACT_MOVEMENT_FIELDS = {"sinpes", "vales", "pagos"}
+EDITABLE_EMPLOYEE_STATUSES = {"submitted"}
+REVIEWABLE_STATUSES = {"submitted", "validated"}
 PRODUCT_ALIASES = {
     "s": "super",
     "super": "super",
@@ -100,6 +102,8 @@ class VouchersModel(BaseModel):
 
 class MovementItem(BaseModel):
     id: Optional[str] = None
+    comprobante: Optional[str] = ""
+    monto: Optional[str] = ""
     descripcion: Optional[str] = ""
     cliente: Optional[str] = ""
     referencia: Optional[str] = ""
@@ -129,7 +133,7 @@ class CierrePayload(BaseModel):
 
 class ReviewPayload(BaseModel):
     validado_json: Dict[str, Any]
-    status: str = "document_reviewed"
+    status: str = "validated"
     audit_notes: Optional[str] = ""
 
 
@@ -223,14 +227,40 @@ def parse_json_field(value: Any, default: Any) -> Any:
     return default
 
 
+def pick_first_text(*values: Any) -> str:
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def normalize_movement(item: Dict[str, Any], movement_type: str) -> Dict[str, Any]:
+    amount_text = str(item.get("monto", item.get("monto_reportado", "")) or "")
+    if movement_type in COMPACT_MOVEMENT_FIELDS:
+        comprobante = pick_first_text(
+            item.get("comprobante"),
+            item.get("referencia"),
+            item.get("descripcion"),
+            item.get("cliente"),
+            item.get("numero"),
+            item.get("detalle"),
+        )
+        return {
+            "id": item.get("id") or str(uuid.uuid4()),
+            "tipo": movement_type,
+            "comprobante": comprobante,
+            "monto": amount_text,
+            "monto_reportado": amount_text,
+            "monto_validado": item.get("monto_validado"),
+        }
     return {
         "id": item.get("id") or str(uuid.uuid4()),
         "tipo": movement_type,
         "descripcion": item.get("descripcion", "") or item.get("detalle", ""),
         "cliente": item.get("cliente", "") or item.get("empresa", ""),
         "referencia": item.get("referencia", "") or item.get("numero", ""),
-        "monto_reportado": str(item.get("monto_reportado", item.get("monto", "")) or ""),
+        "monto_reportado": amount_text,
         "monto_validado": item.get("monto_validado"),
         "estado": item.get("estado", "reportado"),
         "observacion_empleado": item.get("observacion_empleado", item.get("observacion", "")) or "",
@@ -239,6 +269,22 @@ def normalize_movement(item: Dict[str, Any], movement_type: str) -> Dict[str, An
         "validado_por": item.get("validado_por"),
         "validado_at": item.get("validado_at"),
     }
+
+
+def export_movement_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for item in items or []:
+        comprobante = pick_first_text(
+            item.get("comprobante"),
+            item.get("referencia"),
+            item.get("descripcion"),
+            item.get("cliente"),
+        )
+        monto = decimal_to_float(parse_decimal(item.get("monto", item.get("monto_reportado", 0))))
+        if not comprobante and monto == 0:
+            continue
+        rows.append({"monto": monto, "comprobante": comprobante})
+    return rows
 
 
 def default_payload() -> Dict[str, Any]:
@@ -304,7 +350,7 @@ def compute_summary(payload: Dict[str, Any], validated: bool = False) -> Dict[st
             if validated and item.get("monto_validado") not in (None, "", "None"):
                 amount = parse_decimal(item.get("monto_validado"))
             else:
-                amount = parse_decimal(item.get("monto_reportado", 0))
+                amount = parse_decimal(item.get("monto", item.get("monto_reportado", 0)))
             subtotal += amount
         totals[field] = subtotal
     total_reportado = total_vouchers + totals["creditos"] + totals["sinpes"] + totals["depositos"] + totals["vales"] + totals["pagos"]
@@ -328,6 +374,16 @@ def row_to_user(row: Dict[str, Any]) -> Dict[str, Any]:
         "default_turno": row.get("default_turno"),
         "active": row["active"],
     }
+
+
+def normalize_cierre_status(status: Optional[str]) -> str:
+    if status == "observed":
+        return "submitted"
+    if status == "document_reviewed":
+        return "validated"
+    if status == "approved":
+        return "validated"
+    return status or "submitted"
 
 
 def fetch_user_by_id(db, user_id: int) -> Optional[dict]:
@@ -381,6 +437,7 @@ def hydrate_cierre(row: Dict[str, Any]) -> Dict[str, Any]:
     cierre = dict(row)
     reportado = parse_json_field(cierre.get("reportado_json"), {})
     validado = parse_json_field(cierre.get("validado_json"), {})
+    cierre["status"] = normalize_cierre_status(cierre.get("status"))
     cierre["reportado_json"] = normalize_payload(reportado)
     cierre["validado_json"] = normalize_payload(validado if validado else reportado)
     cierre["resumen_reportado"] = parse_json_field(cierre.get("resumen_reportado"), {})
@@ -414,10 +471,32 @@ def assert_can_view_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
 
 
 def assert_can_edit_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
-    if user["role"] in {"admin", "supervisor"}:
+    if user["role"] == "admin":
         return
+    if user["role"] == "supervisor":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede editar cierres directamente")
     if not can_employee_edit(cierre, user):
         raise HTTPException(status_code=403, detail="El cierre ya no puede ser modificado")
+
+
+def assert_can_review_transition(cierre: Dict[str, Any], user: Dict[str, Any], next_status: str):
+    if next_status not in REVIEWABLE_STATUSES:
+        raise HTTPException(status_code=400, detail="Estado de revision invalido")
+
+    current_status = normalize_cierre_status(cierre.get("status"))
+    if user["role"] == "admin":
+        return
+    if user["role"] != "supervisor":
+        raise HTTPException(status_code=403, detail="No autorizado")
+    if current_status == "reconciled":
+        raise HTTPException(status_code=403, detail="Un supervisor no puede modificar un cierre conciliado")
+
+
+def assert_can_reconcile_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Solo un administrador puede conciliar cierres")
+    if normalize_cierre_status(cierre.get("status")) != "validated":
+        raise HTTPException(status_code=400, detail="Solo se puede conciliar un cierre validado")
 
 
 def get_cierre_or_404(db, cierre_id: int) -> Dict[str, Any]:
@@ -434,17 +513,18 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
     validado_payload = normalize_payload(validado_payload or payload)
     resumen_reportado = compute_summary(reportado_payload, validated=False)
     resumen_validado = compute_summary(validado_payload, validated=True)
+    status = normalize_cierre_status(status)
     employee_id = employee_id or current_user["id"]
     employee = fetch_user_by_id(db, employee_id)
     if not employee:
         raise HTTPException(status_code=400, detail="Empleado inválido")
-    editable_until = utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS)
+    editable_until = utcnow() if status in {"validated", "reconciled"} else utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS)
     cur = db.cursor()
     v = reportado_payload["vouchers"]
-    creditos_text = json.dumps(reportado_payload["creditos"])
-    sinpes_text = json.dumps(reportado_payload["sinpes"])
-    vales_text = json.dumps(reportado_payload["vales"])
-    pagos_text = json.dumps(reportado_payload["pagos"])
+    creditos_text = json.dumps(export_movement_rows(reportado_payload["creditos"]))
+    sinpes_text = json.dumps(export_movement_rows(reportado_payload["sinpes"]))
+    vales_text = json.dumps(export_movement_rows(reportado_payload["vales"]))
+    pagos_text = json.dumps(export_movement_rows(reportado_payload["pagos"]))
     if cierre_id is None:
         cur.execute(
             """
@@ -459,7 +539,7 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
                 %s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,
                 %s,%s,%s,%s,%s,
                 %s,%s,%s,%s,%s,%s,%s,
-                %s,%s,%s,%s,%s,%s,%s,%s
+                %s::jsonb,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s,%s,%s
             ) RETURNING id
             """,
             (
@@ -498,11 +578,11 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
                 voucher_fleet_bncr = %s,
                 voucher_fleet_dav = %s,
                 voucher_bncr = %s,
-                creditos_json = %s,
-                sinpes_json = %s,
+                creditos_json = %s::jsonb,
+                sinpes_json = %s::jsonb,
                 deposito = %s,
-                vales_json = %s,
-                pagos_json = %s,
+                vales_json = %s::jsonb,
+                pagos_json = %s::jsonb,
                 efectivo = %s,
                 total_reportado = %s
             WHERE id = %s
@@ -630,7 +710,8 @@ def summarize_gaspro_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     return by_employee
 
 
-def apply_gaspro_to_cierre(db, cierre: Dict[str, Any], summary: Dict[str, Any], import_id: int, actor_id: int):
+def apply_gaspro_to_cierre(db, cierre: Dict[str, Any], summary: Dict[str, Any], import_id: int, actor: Dict[str, Any]):
+    assert_can_reconcile_cierre(cierre, actor)
     mode = "price_change" if summary.get("price_change") else "normal"
     cur = db.cursor()
     cur.execute(
@@ -640,13 +721,14 @@ def apply_gaspro_to_cierre(db, cierre: Dict[str, Any], summary: Dict[str, Any], 
             gaspro_import_id = %s,
             gaspro_mode = %s,
             reconciled_at = %s,
+            editable_until = %s,
             status = %s,
             updated_at = %s
         WHERE id = %s
         """,
-        (json.dumps(summary), import_id, mode, utcnow(), "reconciled", utcnow(), cierre["id"]),
+        (json.dumps(summary), import_id, mode, utcnow(), utcnow(), "reconciled", utcnow(), cierre["id"]),
     )
-    save_audit_log(db, cierre["id"], actor_id, "gaspro_reconciled", {"import_id": import_id, "mode": mode})
+    save_audit_log(db, cierre["id"], actor["id"], "gaspro_reconciled", {"import_id": import_id, "mode": mode})
 
 
 def find_day_sheet(workbook, day_number: int):
@@ -827,12 +909,13 @@ def list_cierres(
     if employee_id and user["role"] in {"admin", "supervisor"}:
         query += " AND employee_id = %s"
         params.append(employee_id)
-    if status:
-        query += " AND status = %s"
-        params.append(status)
     query += " ORDER BY fecha DESC, id DESC"
     cur.execute(query, params)
-    return [hydrate_cierre(row) for row in cur.fetchall()]
+    cierres = [hydrate_cierre(row) for row in cur.fetchall()]
+    if status:
+        normalized_status = normalize_cierre_status(status)
+        cierres = [cierre for cierre in cierres if cierre.get("status") == normalized_status]
+    return cierres
 
 
 @app.get("/api/cierres/{cierre_id}")
@@ -848,7 +931,15 @@ def update_cierre(cierre_id: int, payload: CierrePayload, user=Depends(get_curre
     assert_can_edit_cierre(cierre, user)
     employee_id = payload.employee_id if user["role"] in {"admin", "supervisor"} and payload.employee_id else cierre.get("employee_id")
     try:
-        persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, cierre_id=cierre_id, employee_id=employee_id, status=cierre["status"] if user["role"] == "employee" else "submitted")
+        persist_cierre_payload(
+            db,
+            payload.model_dump(),
+            payload.model_dump(),
+            user,
+            cierre_id=cierre_id,
+            employee_id=employee_id,
+            status=normalize_cierre_status(cierre.get("status")),
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -862,6 +953,10 @@ def review_cierre(cierre_id: int, payload: ReviewPayload, user=Depends(require_r
     cierre = get_cierre_or_404(db, cierre_id)
     validado_payload = normalize_payload(payload.validado_json)
     resumen_validado = compute_summary(validado_payload, validated=True)
+    next_status = normalize_cierre_status(payload.status)
+    assert_can_review_transition(cierre, user, next_status)
+    reviewed_at = utcnow() if next_status == "validated" else None
+    editable_until = utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS) if next_status == "submitted" else utcnow()
     cur = db.cursor()
     cur.execute(
         """
@@ -870,14 +965,47 @@ def review_cierre(cierre_id: int, payload: ReviewPayload, user=Depends(require_r
             resumen_validado = %s::jsonb,
             status = %s,
             audit_notes = %s,
-            document_reviewed_at = NOW(),
+            document_reviewed_at = %s,
+            reconciled_at = NULL,
+            editable_until = %s,
             edited_by_user_id = %s,
             updated_at = NOW()
         WHERE id = %s
         """,
-        (json.dumps(validado_payload), json.dumps(resumen_validado), payload.status, payload.audit_notes or "", user["id"], cierre_id),
+        (
+            json.dumps(validado_payload),
+            json.dumps(resumen_validado),
+            next_status,
+            payload.audit_notes or "",
+            reviewed_at,
+            editable_until,
+            user["id"],
+            cierre_id,
+        ),
     )
-    save_audit_log(db, cierre_id, user["id"], "document_reviewed", {"status": payload.status, "notes": payload.audit_notes or ""})
+    save_audit_log(db, cierre_id, user["id"], "document_reviewed", {"status": next_status, "notes": payload.audit_notes or ""})
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/api/cierres/{cierre_id}/reconcile")
+def reconcile_cierre(cierre_id: int, user=Depends(require_roles("admin")), db=Depends(get_db)):
+    cierre = get_cierre_or_404(db, cierre_id)
+    assert_can_reconcile_cierre(cierre, user)
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE cierres
+        SET status = 'reconciled',
+            reconciled_at = NOW(),
+            editable_until = NOW(),
+            edited_by_user_id = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (user["id"], cierre_id),
+    )
+    save_audit_log(db, cierre_id, user["id"], "reconciled", {"source": "manual"})
     db.commit()
     return {"ok": True}
 
@@ -924,7 +1052,7 @@ def import_gaspro(
     date_from: str = Form(...),
     date_to: str = Form(...),
     file: UploadFile = File(...),
-    user=Depends(require_roles("admin", "supervisor")),
+    user=Depends(require_roles("admin")),
     db=Depends(get_db),
 ):
     saved = save_upload(file, "gaspro")
@@ -957,7 +1085,7 @@ def import_gaspro(
         summary = summary_by_date.get(date_key, {}).get(employee_key)
         if not summary:
             continue
-        apply_gaspro_to_cierre(db, cierre, summary, import_id, user["id"])
+        apply_gaspro_to_cierre(db, cierre, summary, import_id, user)
         matched += 1
     cur.execute("UPDATE gaspro_imports SET matched_cierres = %s, reconciled_at = NOW() WHERE id = %s", (matched, import_id))
     db.commit()
