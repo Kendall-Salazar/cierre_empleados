@@ -133,6 +133,36 @@ class CierrePayload(BaseModel):
     employee_id: Optional[int] = None
 
 
+class CierreTiendaPayload(BaseModel):
+    fecha: str
+    # Resumen de Ingresos
+    mercaderia_contado: Optional[str] = ""
+    abonos_cxc_transferencia: Optional[str] = ""
+    abonos_cxc_efectivo: Optional[str] = ""
+    mercaderia_credito: Optional[str] = ""
+    mercaderia_credito_roco: Optional[str] = ""
+    mercaderia_credito_ltj: Optional[str] = ""
+    mercaderia_credito_jema: Optional[str] = ""
+    t_nelson: Optional[str] = ""
+    iva_nelson: Optional[str] = ""
+    v_finca: Optional[str] = ""
+    litros_finca: Optional[str] = ""
+    # Detalle
+    transf_sinpe_bcr: Optional[str] = ""
+    transferencias_bn_bac: Optional[str] = ""
+    sinpe: Optional[str] = ""
+    tarjeta_bac: Optional[str] = ""
+    tarjeta_bn: Optional[str] = ""
+    tarjeta_bcr: Optional[str] = ""
+    credito_detalle: Optional[str] = ""
+    mercaderia_emilio: Optional[str] = ""
+    vales_tienda: Optional[str] = ""
+    salidas_efectivo: Optional[str] = ""
+    nota_credito: Optional[str] = ""
+    deposito: Optional[str] = ""
+    observaciones: Optional[str] = ""
+
+
 class ReviewPayload(BaseModel):
     validado_json: Dict[str, Any]
     status: str = "validated"
@@ -391,6 +421,72 @@ def compute_summary(payload: Dict[str, Any], validated: bool = False) -> Dict[st
     }
 
 
+TIENDA_RESUMEN_FIELDS = [
+    "mercaderia_contado", "abonos_cxc_transferencia", "abonos_cxc_efectivo",
+    "mercaderia_credito", "mercaderia_credito_roco", "mercaderia_credito_ltj",
+    "mercaderia_credito_jema", "t_nelson", "iva_nelson", "v_finca",
+]
+TIENDA_DETALLE_FIELDS = [
+    "transf_sinpe_bcr", "transferencias_bn_bac", "sinpe",
+    "tarjeta_bac", "tarjeta_bn", "tarjeta_bcr",
+    "credito_detalle", "mercaderia_emilio",
+    "vales_tienda", "salidas_efectivo", "nota_credito", "deposito",
+]
+
+
+def default_tienda_payload() -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "fecha": date.today().isoformat(),
+        "tipo": "tienda",
+        "litros_finca": "",
+        "observaciones": "",
+    }
+    for f in TIENDA_RESUMEN_FIELDS:
+        payload[f] = ""
+    for f in TIENDA_DETALLE_FIELDS:
+        payload[f] = ""
+    return payload
+
+
+def normalize_tienda_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    if data is None:
+        data = {}
+    payload = default_tienda_payload()
+    raw_fecha = data.get("fecha") or payload["fecha"]
+    try:
+        payload["fecha"] = parse_date_value(raw_fecha).isoformat()
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Fecha invalida") from exc
+    payload["observaciones"] = str(data.get("observaciones", "") or "").strip()
+    payload["litros_finca"] = str(data.get("litros_finca", "") or "").strip()
+    for f in TIENDA_RESUMEN_FIELDS + TIENDA_DETALLE_FIELDS:
+        payload[f] = str(data.get(f, "") or "").strip()
+    return payload
+
+
+def compute_tienda_summary(payload: Dict[str, Any]) -> Dict[str, float]:
+    resumen_total = Decimal("0")
+    detalle_total = Decimal("0")
+    resumen_items = {}
+    detalle_items = {}
+    for f in TIENDA_RESUMEN_FIELDS:
+        val = parse_decimal(payload.get(f))
+        resumen_items[f] = decimal_to_float(val)
+        resumen_total += val
+    for f in TIENDA_DETALLE_FIELDS:
+        val = parse_decimal(payload.get(f))
+        detalle_items[f] = decimal_to_float(val)
+        detalle_total += val
+    return {
+        **resumen_items,
+        **detalle_items,
+        "total_resumen": decimal_to_float(resumen_total),
+        "total_detalle": decimal_to_float(detalle_total),
+        "diferencia": decimal_to_float(resumen_total - detalle_total),
+        "total_reportado": decimal_to_float(resumen_total),
+    }
+
+
 def row_to_user(row: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": row["id"],
@@ -545,8 +641,13 @@ def hydrate_cierre(row: Dict[str, Any]) -> Dict[str, Any]:
     reportado = parse_json_field(cierre.get("reportado_json"), {})
     validado = parse_json_field(cierre.get("validado_json"), {})
     cierre["status"] = normalize_cierre_status(cierre.get("status"))
-    cierre["reportado_json"] = normalize_payload(reportado)
-    cierre["validado_json"] = normalize_payload(validado if validado else reportado)
+    cierre["tipo"] = cierre.get("tipo", "pista")
+    if cierre["tipo"] == "tienda":
+        cierre["reportado_json"] = normalize_tienda_payload(reportado)
+        cierre["validado_json"] = normalize_tienda_payload(validado if validado else reportado)
+    else:
+        cierre["reportado_json"] = normalize_payload(reportado)
+        cierre["validado_json"] = normalize_payload(validado if validado else reportado)
     cierre["resumen_reportado"] = parse_json_field(cierre.get("resumen_reportado"), {})
     cierre["resumen_validado"] = parse_json_field(cierre.get("resumen_validado"), {})
     cierre["gaspro_summary"] = parse_json_field(cierre.get("gaspro_summary"), {})
@@ -579,6 +680,18 @@ def assert_can_view_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
 
 def assert_can_edit_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
     if user["role"] == "admin":
+        return
+    if user["role"] == "tienda":
+        if cierre.get("employee_id") != user["id"]:
+            raise HTTPException(status_code=403, detail="No podés editar este cierre")
+        if cierre.get("tipo") != "tienda":
+            raise HTTPException(status_code=403, detail="No autorizado")
+        editable_until = cierre.get("editable_until")
+        if editable_until:
+            if isinstance(editable_until, str):
+                editable_until = datetime.fromisoformat(editable_until)
+            if utcnow() > editable_until:
+                raise HTTPException(status_code=403, detail="El cierre ya no puede ser modificado")
         return
     if user["role"] == "supervisor":
         raise HTTPException(status_code=403, detail="Solo un administrador puede editar cierres directamente")
@@ -704,6 +817,61 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
             ),
         )
         save_audit_log(db, cierre_id, current_user["id"], "updated", {"status": status})
+    db.commit()
+    return cierre_id
+
+
+def persist_cierre_tienda(db, payload: Dict[str, Any], current_user: Dict[str, Any], cierre_id: Optional[int] = None) -> int:
+    reportado = normalize_tienda_payload(payload)
+    resumen = compute_tienda_summary(reportado)
+    status = "submitted"
+    editable_until = utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS)
+    cur = db.cursor()
+    if cierre_id is None:
+        cur.execute(
+            """
+            INSERT INTO cierres (
+                fecha, empleado, employee_id, turno, datafono, observaciones,
+                status, tipo, reportado_json, validado_json, resumen_reportado, resumen_validado,
+                created_by_user_id, edited_by_user_id, submitted_at, editable_until, updated_at,
+                voucher_bcr, voucher_bac, voucher_bac_flotas, voucher_versatec,
+                voucher_fleet_bncr, voucher_fleet_dav, voucher_bncr,
+                creditos_json, sinpes_json, deposito, vales_json, pagos_json, efectivo, total_reportado, enviado_at
+            ) VALUES (
+                %s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s::jsonb,
+                %s,%s,%s,%s,%s,
+                %s,%s,%s,%s,%s,%s,%s,
+                %s::jsonb,%s::jsonb,%s,%s::jsonb,%s::jsonb,%s,%s,%s
+            ) RETURNING id
+            """,
+            (
+                reportado["fecha"], current_user["full_name"], current_user["id"], "", "", reportado.get("observaciones", ""),
+                status, "tienda", json.dumps(reportado), json.dumps(reportado), json.dumps(resumen), json.dumps(resumen),
+                current_user["id"], current_user["id"], utcnow(), editable_until, utcnow(),
+                0, 0, 0, 0, 0, 0, 0,
+                '[]', '[]', 0, '[]', '[]', 0, resumen["total_reportado"], utcnow(),
+            ),
+        )
+        cierre_id = cur.fetchone()[0]
+        save_audit_log(db, cierre_id, current_user["id"], "created", {"status": status, "tipo": "tienda"})
+    else:
+        cur.execute(
+            """
+            UPDATE cierres
+            SET fecha = %s, observaciones = %s, reportado_json = %s::jsonb, validado_json = %s::jsonb,
+                resumen_reportado = %s::jsonb, resumen_validado = %s::jsonb,
+                edited_by_user_id = %s, editable_until = %s, updated_at = %s,
+                total_reportado = %s
+            WHERE id = %s
+            """,
+            (
+                reportado["fecha"], reportado.get("observaciones", ""),
+                json.dumps(reportado), json.dumps(reportado), json.dumps(resumen), json.dumps(resumen),
+                current_user["id"], editable_until, utcnow(),
+                resumen["total_reportado"], cierre_id,
+            ),
+        )
+        save_audit_log(db, cierre_id, current_user["id"], "updated", {"status": status, "tipo": "tienda"})
     db.commit()
     return cierre_id
 
@@ -893,7 +1061,7 @@ def login(payload: LoginRequest, db=Depends(get_db)):
             return {"token": token, "user": row_to_user(row)}
         cur.execute("SELECT * FROM users WHERE active = TRUE AND username = %s LIMIT 1", (payload.username,))
         row = cur.fetchone()
-        if not row or row["role"] not in {"supervisor", "admin"} or not verify_secret(payload.password, row.get("password_hash")):
+        if not row or row["role"] not in {"supervisor", "admin", "tienda"} or not verify_secret(payload.password, row.get("password_hash")):
             raise HTTPException(status_code=401, detail="Credenciales incorrectas")
         token = create_session(db, row["id"])
         db.commit()
@@ -957,7 +1125,7 @@ def list_users(
 @app.post("/api/users")
 def create_user(payload: UserCreate, _: dict = Depends(require_roles("admin")), db=Depends(get_db)):
     role = payload.role.strip().lower()
-    if role not in {"employee", "supervisor", "admin"}:
+    if role not in {"employee", "supervisor", "admin", "tienda"}:
         raise HTTPException(status_code=422, detail="Rol invalido")
 
     full_name = str(payload.full_name or "").strip()
@@ -1003,7 +1171,7 @@ def update_user(user_id: int, payload: UserUpdate, _: dict = Depends(require_rol
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
 
     next_role = (payload.role or row["role"]).strip().lower()
-    if next_role not in {"employee", "supervisor", "admin"}:
+    if next_role not in {"employee", "supervisor", "admin", "tienda"}:
         raise HTTPException(status_code=422, detail="Rol invalido")
 
     full_name = payload.full_name if payload.full_name is not None else row["full_name"]
@@ -1110,6 +1278,40 @@ def count_cierres_for_date(fecha: str, user=Depends(get_current_user), db=Depend
     return {"count": cur.fetchone()[0], "max": 3}
 
 
+@app.post("/api/cierres/tienda")
+def create_cierre_tienda(payload: CierreTiendaPayload, user=Depends(get_current_user), db=Depends(get_db)):
+    if user["role"] not in {"tienda", "admin"}:
+        raise HTTPException(status_code=403, detail="No autorizado")
+    cur = db.cursor()
+    cur.execute("SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s AND tipo = 'tienda'", (user["id"], payload.fecha))
+    if cur.fetchone()[0] >= 1:
+        raise HTTPException(status_code=409, detail="Ya existe un cierre de tienda para esta fecha.")
+    try:
+        cierre_id = persist_cierre_tienda(db, payload.model_dump(), user)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al guardar el cierre de tienda: {str(exc)}") from exc
+    return {"id": cierre_id, "status": "ok"}
+
+
+@app.put("/api/cierres/tienda/{cierre_id}")
+def update_cierre_tienda(cierre_id: int, payload: CierreTiendaPayload, user=Depends(get_current_user), db=Depends(get_db)):
+    cierre = get_cierre_or_404(db, cierre_id)
+    if cierre.get("tipo") != "tienda":
+        raise HTTPException(status_code=400, detail="Este cierre no es de tienda")
+    assert_can_edit_cierre(cierre, user)
+    try:
+        persist_cierre_tienda(db, payload.model_dump(), user, cierre_id=cierre_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error al actualizar: {str(exc)}") from exc
+    return {"id": cierre_id, "status": "ok"}
+
+
 @app.get("/api/cierres")
 def list_cierres(
     fecha: Optional[str] = None,
@@ -1122,7 +1324,10 @@ def list_cierres(
     query = "SELECT * FROM cierres WHERE 1=1"
     params: List[Any] = []
     if user["role"] == "employee":
-        query += " AND employee_id = %s"
+        query += " AND employee_id = %s AND (tipo = 'pista' OR tipo IS NULL)"
+        params.append(user["id"])
+    elif user["role"] == "tienda":
+        query += " AND employee_id = %s AND tipo = 'tienda'"
         params.append(user["id"])
     if fecha:
         query += " AND fecha = %s"

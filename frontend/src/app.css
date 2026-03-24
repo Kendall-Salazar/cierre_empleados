@@ -1564,6 +1564,14 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 
+  .tienda-field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tienda-summary-bar {
+    grid-template-columns: 1fr;
+  }
+
   .movement-field-span-2 {
     grid-column: auto;
   }
@@ -1627,6 +1635,89 @@ button:disabled {
 
 .btn-ghost-danger:hover {
   background: var(--error-bg);
+}
+
+/* ─── Tienda ─────────────────────────────────────────────── */
+.tienda-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+}
+
+.tienda-summary-board {
+  display: grid;
+  gap: 0;
+}
+
+.tienda-summary-board .summary-list {
+  gap: 0;
+}
+
+.summary-section-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  padding: 10px 0 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.tienda-summary-bar {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  padding: 14px 0;
+}
+
+.tienda-summary-item {
+  display: grid;
+  gap: 2px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  border: 1px solid var(--line);
+  text-align: center;
+}
+
+.tienda-summary-item span {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-soft);
+}
+
+.tienda-summary-item strong {
+  font-family: var(--font-display);
+  font-size: 1.1rem;
+  color: var(--ink);
+}
+
+.tienda-diferencia {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 14px;
+  margin-top: 8px;
+  border-radius: var(--radius-md);
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  font-weight: 600;
+}
+
+.tienda-diferencia strong {
+  font-family: var(--font-display);
+  color: var(--success);
+}
+
+.tienda-diff-warning {
+  background: var(--error-bg) !important;
+  border-color: var(--error-border) !important;
+}
+
+.tienda-diff-warning strong {
+  color: var(--error) !important;
 }
 
 /* ─── Edit Time Badges ──────────────────────────────────── */

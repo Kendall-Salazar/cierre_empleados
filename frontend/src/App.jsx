@@ -68,12 +68,14 @@ const MOVEMENT_SECTIONS = [
 const STAFF_ROLE_OPTIONS = [
   { value: "supervisor", label: "Supervisor" },
   { value: "admin", label: "Administrador" },
+  { value: "tienda", label: "Tienda" },
 ];
 
 const ROLE_LABELS = {
   employee: "Pistero",
   supervisor: "Supervisor",
   admin: "Administrador",
+  tienda: "Tienda",
 };
 
 const REVIEW_STATUS_OPTIONS = [
@@ -1091,7 +1093,10 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
               Empleado
             </button>
             <button className={cx("segmented-button", mode === "staff" && "is-active")} type="button" onClick={() => setMode("staff")}>
-              Supervisor o admin
+              Supervisor
+            </button>
+            <button className={cx("segmented-button", mode === "tienda" && "is-active")} type="button" onClick={() => setMode("tienda")}>
+              Tienda
             </button>
           </div>
 
@@ -1110,7 +1115,7 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
               </>
             ) : (
               <>
-                <TextField label="Usuario" value={username} onChange={setUsername} placeholder="supervisor" />
+                <TextField label="Usuario" value={username} onChange={setUsername} placeholder={mode === "tienda" ? "usuario de tienda" : "supervisor"} />
                 <TextField label="Contrasena" type="password" value={password} onChange={setPassword} placeholder="Ingresa tu contrasena" />
               </>
             )}
@@ -2136,6 +2141,313 @@ function UserAdminPanel({ token, onRosterChange }) {
   );
 }
 
+/* ─── Tienda ─────────────────────────────────────────── */
+
+const TIENDA_RESUMEN_FIELDS = [
+  { key: "mercaderia_contado", label: "Mercaderia contado" },
+  { key: "abonos_cxc_transferencia", label: "Abonos CxC (trans/sinpe/tarj)" },
+  { key: "abonos_cxc_efectivo", label: "Abonos CxC efectivo" },
+  { key: "mercaderia_credito", label: "Mercaderia a credito" },
+  { key: "mercaderia_credito_roco", label: "Merca credito Roco" },
+  { key: "mercaderia_credito_ltj", label: "Merca credito LTJ" },
+  { key: "mercaderia_credito_jema", label: "Merca credito JEMA" },
+  { key: "t_nelson", label: "T. Nelson" },
+  { key: "iva_nelson", label: "IVA Nelson" },
+  { key: "v_finca", label: "V. Finca" },
+];
+
+const TIENDA_DETALLE_FIELDS = [
+  { key: "transf_sinpe_bcr", label: "Transf. y SINPE BCR" },
+  { key: "transferencias_bn_bac", label: "Transferencias BN y BAC" },
+  { key: "sinpe", label: "SINPE" },
+  { key: "tarjeta_bac", label: "Tarjeta BAC" },
+  { key: "tarjeta_bn", label: "Tarjeta BN (datafono oficina)" },
+  { key: "tarjeta_bcr", label: "Tarjeta BCR" },
+  { key: "credito_detalle", label: "Credito" },
+  { key: "mercaderia_emilio", label: "Mercaderia Emilio" },
+  { key: "vales_tienda", label: "Vales tienda" },
+  { key: "salidas_efectivo", label: "Salidas de efectivo" },
+  { key: "nota_credito", label: "Nota de credito" },
+  { key: "deposito", label: "Deposito" },
+];
+
+function emptyTiendaForm() {
+  const form = { fecha: new Date().toISOString().slice(0, 10), litros_finca: "", observaciones: "" };
+  for (const f of TIENDA_RESUMEN_FIELDS) form[f.key] = "";
+  for (const f of TIENDA_DETALLE_FIELDS) form[f.key] = "";
+  return form;
+}
+
+function summarizeTienda(form) {
+  let totalResumen = 0;
+  let totalDetalle = 0;
+  for (const f of TIENDA_RESUMEN_FIELDS) totalResumen += parseAmount(form[f.key]);
+  for (const f of TIENDA_DETALLE_FIELDS) totalDetalle += parseAmount(form[f.key]);
+  return { totalResumen, totalDetalle, diferencia: totalResumen - totalDetalle };
+}
+
+function CierreTiendaForm({ form, setForm, onSave, editing, saving }) {
+  const summary = useMemo(() => summarizeTienda(form), [form]);
+  const setField = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+
+  const handleSubmit = (event) => {
+    event.preventDefault();
+    onSave(form);
+  };
+
+  return (
+    <form className="form-stack" onSubmit={handleSubmit}>
+      <FormSection index="01" title="Datos generales" accent="#13315c">
+        <div className="field-grid-3">
+          <FieldShell label="Fecha">
+            <input className="field-input" type="date" value={form.fecha} onChange={(e) => setField("fecha", e.target.value)} />
+          </FieldShell>
+        </div>
+      </FormSection>
+
+      <FormSection index="02" title="Resumen de ingresos" accent="#0f9d76">
+        <div className="tienda-field-grid">
+          {TIENDA_RESUMEN_FIELDS.map((f) => (
+            <MoneyField key={f.key} label={f.label} value={form[f.key]} onChange={(v) => setField(f.key, v)} />
+          ))}
+        </div>
+        <div className="field-grid-3" style={{ marginTop: 10 }}>
+          <TextField label="Litros Finca" value={form.litros_finca || ""} onChange={(v) => setField("litros_finca", v)} placeholder="Cantidad de litros" />
+        </div>
+        <div className="inline-total">
+          <span>Total resumen</span>
+          <strong>CRC {money(summary.totalResumen)}</strong>
+        </div>
+      </FormSection>
+
+      <FormSection index="03" title="Detalle" accent="#ff9f1a">
+        <div className="tienda-field-grid">
+          {TIENDA_DETALLE_FIELDS.map((f) => (
+            <MoneyField key={f.key} label={f.label} value={form[f.key]} onChange={(v) => setField(f.key, v)} />
+          ))}
+        </div>
+        <div className="inline-total">
+          <span>Total detalle</span>
+          <strong>CRC {money(summary.totalDetalle)}</strong>
+        </div>
+      </FormSection>
+
+      <FormSection index="04" title="Observaciones" accent="#6c63ff">
+        <TextAreaField label="Comentarios" value={form.observaciones || ""} onChange={(v) => setField("observaciones", v)} placeholder="Observaciones del cierre" />
+      </FormSection>
+
+      <div className="tienda-summary-bar">
+        <div className="tienda-summary-item">
+          <span>Total resumen</span>
+          <strong>CRC {money(summary.totalResumen)}</strong>
+        </div>
+        <div className="tienda-summary-item">
+          <span>Total detalle</span>
+          <strong>CRC {money(summary.totalDetalle)}</strong>
+        </div>
+        <div className={cx("tienda-summary-item", summary.diferencia !== 0 && "tienda-diff-warning")}>
+          <span>Diferencia</span>
+          <strong>CRC {money(summary.diferencia)}</strong>
+        </div>
+      </div>
+
+      <div className="form-submit-row">
+        <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyTiendaForm())} disabled={saving}>
+          Limpiar
+        </button>
+        <button className="btn btn-primary" type="submit" disabled={saving}>
+          {saving ? "Guardando..." : editing ? "Guardar cambios" : "Guardar cierre"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function TiendaDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
+  const [cierres, setCierres] = useState([]);
+  const [draft, setDraft] = useState(() => emptyTiendaForm());
+  const [editing, setEditing] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const data = await api("/api/cierres", {}, token);
+      setCierres(data);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const startNew = () => {
+    setEditing(null);
+    setDraft(emptyTiendaForm());
+    setMessage(null);
+  };
+
+  const startEdit = (cierre) => {
+    setEditing(cierre);
+    const payload = cierre.reportado_json || {};
+    setDraft({ ...emptyTiendaForm(), ...payload });
+    setMessage(null);
+  };
+
+  const save = async (payload) => {
+    if (!payload.fecha) {
+      setMessage({ tone: "error", text: "Selecciona una fecha." });
+      return;
+    }
+    setSaving(true);
+    setMessage(null);
+    try {
+      if (editing?.id) {
+        await api(`/api/cierres/tienda/${editing.id}`, { method: "PUT", body: JSON.stringify(payload) }, token);
+        setMessage({ tone: "success", text: "El cierre de tienda se actualizo correctamente." });
+      } else {
+        await api("/api/cierres/tienda", { method: "POST", body: JSON.stringify(payload) }, token);
+        setMessage({ tone: "success", text: "El cierre de tienda se guardo correctamente." });
+      }
+      setEditing(null);
+      setDraft(emptyTiendaForm());
+      await load();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const summary = useMemo(() => summarizeTienda(draft), [draft]);
+
+  return (
+    <AppShell
+      user={user}
+      title="Cierre de tienda"
+      onLogout={onLogout}
+      isDark={isDark}
+      onToggleTheme={onToggleTheme}
+    >
+      <div className="metric-grid">
+        <MetricCard label="Cierres" value={cierres.length} caption="Tu historial" accent="#13315c" />
+        <MetricCard label="Resumen" value={`CRC ${money(summary.totalResumen)}`} caption="Ingresos" accent="#0f9d76" />
+        <MetricCard label="Detalle" value={`CRC ${money(summary.totalDetalle)}`} caption="Desglose" accent="#ff9f1a" />
+        <MetricCard label="Diferencia" value={`CRC ${money(summary.diferencia)}`} caption={summary.diferencia === 0 ? "Cuadra" : "Revisar"} accent={summary.diferencia === 0 ? "#0f9d76" : "#d94b4b"} />
+      </div>
+
+      {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+
+      <div className="dashboard-grid">
+        <div className="stack">
+          <Panel
+            eyebrow="Formulario"
+            title={editing ? "Editar cierre" : "Nuevo cierre de tienda"}
+            subtitle="Registro diario."
+            accent="#ff9f1a"
+            action={
+              <button className="btn btn-secondary" type="button" onClick={startNew} disabled={saving}>
+                {editing ? "Cancelar edicion" : "Nuevo cierre"}
+              </button>
+            }
+          >
+            <CierreTiendaForm
+              form={draft}
+              setForm={setDraft}
+              onSave={save}
+              editing={Boolean(editing)}
+              saving={saving}
+            />
+          </Panel>
+        </div>
+
+        <div className="stack">
+          <Panel eyebrow="Resumen" title="Cierre actual" accent="#0f766e" className="sticky-panel">
+            <div className="tienda-summary-board">
+              <div className="summary-list">
+                <div className="summary-section-title">Resumen de ingresos</div>
+                {TIENDA_RESUMEN_FIELDS.map((f) => (
+                  <div key={f.key} className="summary-row">
+                    <span>{f.label}</span>
+                    <strong className="summary-row-value">CRC {money(parseAmount(draft[f.key]))}</strong>
+                  </div>
+                ))}
+                {draft.litros_finca ? (
+                  <div className="summary-row">
+                    <span>Litros Finca</span>
+                    <strong className="summary-row-value">{draft.litros_finca}</strong>
+                  </div>
+                ) : null}
+                <div className="summary-total">
+                  <span>Total resumen</span>
+                  <strong>CRC {money(summary.totalResumen)}</strong>
+                </div>
+                <div className="summary-section-title" style={{ marginTop: 12 }}>Detalle</div>
+                {TIENDA_DETALLE_FIELDS.map((f) => (
+                  <div key={f.key} className="summary-row">
+                    <span>{f.label}</span>
+                    <strong className="summary-row-value">CRC {money(parseAmount(draft[f.key]))}</strong>
+                  </div>
+                ))}
+                <div className="summary-total">
+                  <span>Total detalle</span>
+                  <strong>CRC {money(summary.totalDetalle)}</strong>
+                </div>
+              </div>
+              <div className={cx("tienda-diferencia", summary.diferencia !== 0 && "tienda-diff-warning")}>
+                <span>Diferencia</span>
+                <strong>CRC {money(summary.diferencia)}</strong>
+              </div>
+            </div>
+          </Panel>
+
+          <Panel
+            eyebrow="Historial"
+            title="Mis cierres"
+            accent="#13315c"
+            action={<button className="btn btn-ghost" type="button" onClick={load}>Actualizar</button>}
+          >
+            {loading ? (
+              <HistorySkeleton />
+            ) : cierres.length === 0 ? (
+              <EmptyState title="Sin cierres" body="Aun no hay registros." />
+            ) : (
+              <div className="history-list">
+                {cierres.map((cierre) => {
+                  const resumen = cierre.resumen_reportado || {};
+                  return (
+                    <div className="history-card" key={cierre.id}>
+                      <div className="history-card-main">
+                        <div className="history-card-top">
+                          <strong>{formatDateLabel(cierre.fecha)}</strong>
+                          <StatusPill status={cierre.status} />
+                        </div>
+                        <span className="history-total">CRC {money(resumen.total_resumen || resumen.total_reportado)}</span>
+                        {resumen.diferencia ? (
+                          <span className={resumen.diferencia === 0 ? "edit-time-badge" : "edit-time-expired"}>
+                            Dif: CRC {money(resumen.diferencia)}
+                          </span>
+                        ) : null}
+                      </div>
+                      <button className="btn btn-secondary" type="button" onClick={() => startEdit(cierre)}>Editar</button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+        </div>
+      </div>
+    </AppShell>
+  );
+}
+
 function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [tab, setTab] = useState("review");
   const [employees, setEmployees] = useState([]);
@@ -2216,21 +2528,19 @@ export default function App() {
     return <LoginScreen onLogin={session.save} isDark={theme.isDark} onToggleTheme={theme.toggleTheme} />;
   }
 
-  return session.user.role === "employee" ? (
-    <EmployeeDashboard
-      token={session.token}
-      user={session.user}
-      onLogout={logout}
-      isDark={theme.isDark}
-      onToggleTheme={theme.toggleTheme}
-    />
-  ) : (
-    <StaffDashboard
-      token={session.token}
-      user={session.user}
-      onLogout={logout}
-      isDark={theme.isDark}
-      onToggleTheme={theme.toggleTheme}
-    />
-  );
+  const dashboardProps = {
+    token: session.token,
+    user: session.user,
+    onLogout: logout,
+    isDark: theme.isDark,
+    onToggleTheme: theme.toggleTheme,
+  };
+
+  if (session.user.role === "tienda") {
+    return <TiendaDashboard {...dashboardProps} />;
+  }
+  if (session.user.role === "employee") {
+    return <EmployeeDashboard {...dashboardProps} />;
+  }
+  return <StaffDashboard {...dashboardProps} />;
 }

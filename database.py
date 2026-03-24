@@ -165,7 +165,7 @@ def init_db():
                 id SERIAL PRIMARY KEY,
                 username TEXT UNIQUE NOT NULL,
                 full_name TEXT NOT NULL,
-                role TEXT NOT NULL CHECK (role IN ('employee', 'supervisor', 'admin')),
+                role TEXT NOT NULL CHECK (role IN ('employee', 'supervisor', 'admin', 'tienda')),
                 default_turno TEXT,
                 pin_hash TEXT,
                 password_hash TEXT,
@@ -340,6 +340,15 @@ def init_db():
     )
     for column, default_sql in jsonb_columns:
         ensure_jsonb_column(cur, "cierres", column, default_sql)
+
+    ensure_column(cur, "cierres", "tipo", "TEXT NOT NULL DEFAULT 'pista'")
+
+    # Expand role constraint to include 'tienda'
+    try:
+        cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_role_check")
+        cur.execute("ALTER TABLE users ADD CONSTRAINT users_role_check CHECK (role IN ('employee', 'supervisor', 'admin', 'tienda'))")
+    except Exception:
+        pass
 
     seed_users(cur)
     cur.execute(
