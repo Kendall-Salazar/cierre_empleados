@@ -65,6 +65,17 @@ const MOVEMENT_SECTIONS = [
   },
 ];
 
+const STAFF_ROLE_OPTIONS = [
+  { value: "supervisor", label: "Supervisor" },
+  { value: "admin", label: "Administrador" },
+];
+
+const ROLE_LABELS = {
+  employee: "Pistero",
+  supervisor: "Supervisor",
+  admin: "Administrador",
+};
+
 const REVIEW_STATUS_OPTIONS = [
   { value: "submitted", label: "Devuelto con nota" },
   { value: "validated", label: "Validado" },
@@ -287,6 +298,16 @@ function emptyForm(defaultTurno = "1") {
     pagos: [],
     observaciones: "",
     employee_id: null,
+  };
+}
+
+function emptyUserDraft(role = "employee") {
+  return {
+    full_name: "",
+    username: "",
+    role,
+    pin: "",
+    password: "",
   };
 }
 
@@ -1077,18 +1098,15 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
           <form className="auth-form" onSubmit={submit}>
             {mode === "employee" ? (
               <>
-                <FieldShell label="PIN" hint="4 digitos">
+                <FieldShell label="Clave de colaborador" hint="Usa la clave asignada por administracion">
                   <input
-                    className="field-input pin-input"
+                    className="field-input"
                     type="password"
-                    inputMode="numeric"
-                    maxLength={4}
                     value={pin}
-                    onChange={(event) => setPin(event.target.value.replace(/\D/g, "").slice(0, 4))}
-                    placeholder="0000"
+                    onChange={(event) => setPin(event.target.value)}
+                    placeholder="Ingresa tu clave"
                   />
                 </FieldShell>
-                <div className="hint-card">Acceso directo al cierre.</div>
               </>
             ) : (
               <>
@@ -1821,16 +1839,324 @@ function GasproPanel({ token }) {
   );
 }
 
+function UserAdminPanel({ token, onRosterChange }) {
+  const [users, setUsers] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
+  const [draft, setDraft] = useState(() => emptyUserDraft("employee"));
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  const load = async (nextSelectedId = selectedId) => {
+    setLoading(true);
+    try {
+      const data = await api("/api/users", {}, token);
+      setUsers(data);
+      if (nextSelectedId && data.some((item) => item.id === nextSelectedId)) {
+        setSelectedId(nextSelectedId);
+      } else if (nextSelectedId && !data.some((item) => item.id === nextSelectedId)) {
+        setSelectedId(null);
+      }
+      await onRosterChange?.();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, [token]);
+
+  const employees = useMemo(() => users.filter((item) => item.role === "employee"), [users]);
+  const staff = useMemo(() => users.filter((item) => item.role !== "employee"), [users]);
+  const selectedUser = useMemo(() => users.find((item) => item.id === selectedId) || null, [users, selectedId]);
+
+  useEffect(() => {
+    if (!selectedUser) return;
+    setDraft({
+      full_name: selectedUser.full_name || "",
+      username: selectedUser.username || "",
+      role: selectedUser.role || "employee",
+      pin: "",
+      password: "",
+    });
+  }, [selectedUser]);
+
+  const startNew = (role = "employee") => {
+    setSelectedId(null);
+    setDraft(emptyUserDraft(role));
+    setMessage(null);
+  };
+
+  const save = async () => {
+    if (!draft.full_name.trim()) {
+      setMessage({ tone: "error", text: "Escribe el nombre completo." });
+      return;
+    }
+    if (!selectedUser && draft.role === "employee" && !draft.pin.trim()) {
+      setMessage({ tone: "error", text: "Define la clave del colaborador." });
+      return;
+    }
+    if (!selectedUser && draft.role !== "employee" && !draft.password.trim()) {
+      setMessage({ tone: "error", text: "Define la contrasena del usuario." });
+      return;
+    }
+
+    const payload = {
+      full_name: draft.full_name.trim(),
+      username: draft.username.trim() || undefined,
+      role: draft.role,
+    };
+
+    if (draft.role === "employee") {
+      if (draft.pin.trim()) payload.pin = draft.pin.trim();
+    } else if (draft.password.trim()) {
+      payload.password = draft.password.trim();
+    }
+
+    setSaving(true);
+    setMessage(null);
+    try {
+      const response = selectedUser
+        ? await api(`/api/users/${selectedUser.id}`, { method: "PATCH", body: JSON.stringify(payload) }, token)
+        : await api("/api/users", { method: "POST", body: JSON.stringify(payload) }, token);
+
+      await load(response.id);
+      setMessage({
+        tone: "success",
+        text: selectedUser ? "El usuario se actualizo correctamente." : "El usuario se creo correctamente.",
+      });
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async () => {
+    if (!selectedUser) return;
+    if (!window.confirm(`Se desactivara a ${selectedUser.full_name}. Puedes volver a crearlo despues si hace falta.`)) {
+      return;
+    }
+
+    setRemoving(true);
+    setMessage(null);
+    try {
+      await api(`/api/users/${selectedUser.id}`, { method: "DELETE" }, token);
+      startNew(selectedUser.role === "employee" ? "employee" : "supervisor");
+      await load();
+      setMessage({ tone: "success", text: "El usuario se quito correctamente." });
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  return (
+    <div className="dashboard-grid">
+      <Panel
+        eyebrow="Control"
+        title="Personal y accesos"
+        subtitle="Gestiona pisteros, supervisores y administradores."
+        accent="#13315c"
+        action={<button className="btn btn-ghost" type="button" onClick={() => load()} disabled={loading}>Actualizar</button>}
+      >
+        {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+
+        <div className="user-admin-toolbar">
+          <button className="btn btn-primary" type="button" onClick={() => startNew("employee")}>
+            Nuevo pistero
+          </button>
+          <button className="btn btn-secondary" type="button" onClick={() => startNew("supervisor")}>
+            Nuevo acceso staff
+          </button>
+        </div>
+
+        <div className="user-admin-groups">
+          <div className="stack">
+            <div className="list-section-head">
+              <strong>Pisteros</strong>
+              <span>{employees.length}</span>
+            </div>
+            {loading ? (
+              <EmptyState title="Cargando" body="Consultando personal operativo." />
+            ) : employees.length === 0 ? (
+              <EmptyState title="Sin pisteros" body="Agrega el primer colaborador." />
+            ) : (
+              <div className="selectable-list">
+                {employees.map((item) => (
+                  <button
+                    className={cx("selectable-card", selectedId === item.id && "is-active")}
+                    key={item.id}
+                    type="button"
+                    onClick={() => setSelectedId(item.id)}
+                  >
+                    <div className="selectable-card-copy">
+                      <strong>{item.full_name}</strong>
+                      <span>@{item.username}</span>
+                    </div>
+                    <div className="selectable-card-meta">
+                      <span className="meta-chip">Turno {item.default_turno || "-"}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="stack">
+            <div className="list-section-head">
+              <strong>Supervision y admin</strong>
+              <span>{staff.length}</span>
+            </div>
+            {loading ? (
+              <EmptyState title="Cargando" body="Consultando accesos administrativos." />
+            ) : staff.length === 0 ? (
+              <EmptyState title="Sin staff" body="Crea un supervisor o administrador." />
+            ) : (
+              <div className="selectable-list">
+                {staff.map((item) => (
+                  <button
+                    className={cx("selectable-card", selectedId === item.id && "is-active")}
+                    key={item.id}
+                    type="button"
+                    onClick={() => setSelectedId(item.id)}
+                  >
+                    <div className="selectable-card-copy">
+                      <strong>{item.full_name}</strong>
+                      <span>@{item.username}</span>
+                    </div>
+                    <div className="selectable-card-meta">
+                      <span className="meta-chip">{ROLE_LABELS[item.role] || item.role}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
+        eyebrow="Editor"
+        title={selectedUser ? selectedUser.full_name : draft.role === "employee" ? "Nuevo pistero" : "Nuevo acceso staff"}
+        subtitle={selectedUser ? `Edita ${ROLE_LABELS[selectedUser.role] || selectedUser.role}` : "Crea un usuario con su rol y credenciales."}
+        accent="#ff9f1a"
+      >
+        <div className="form-stack">
+          <SelectField
+            label="Rol"
+            value={draft.role}
+            onChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                role: value,
+                password: value === "employee" ? "" : current.password,
+                pin: value === "employee" ? current.pin : "",
+              }))
+            }
+          >
+            <option value="employee">Pistero</option>
+            {STAFF_ROLE_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
+
+          <TextField
+            label="Nombre completo"
+            value={draft.full_name}
+            onChange={(value) => setDraft((current) => ({ ...current, full_name: value }))}
+            placeholder="Nombre de la persona"
+          />
+
+          <TextField
+            label="Usuario"
+            hint="Si lo dejas vacio se genera automaticamente."
+            value={draft.username}
+            onChange={(value) => setDraft((current) => ({ ...current, username: value }))}
+            placeholder="usuario"
+          />
+
+          {draft.role === "employee" ? (
+            <>
+              <TextField
+                label={selectedUser ? "Nueva clave del colaborador" : "Clave del colaborador"}
+                hint={selectedUser ? "Deja vacio para conservar la actual." : "Esta clave reemplaza el PIN numerico."}
+                type="password"
+                value={draft.pin}
+                onChange={(value) => setDraft((current) => ({ ...current, pin: value }))}
+                placeholder="Clave segura"
+              />
+              <div className="context-card">
+                <span>Turno asignado</span>
+                <strong>{selectedUser?.default_turno || "Automatico al guardar"}</strong>
+                <small>Cuando quitas a alguien, los turnos activos se reordenan solos para tapar huecos.</small>
+              </div>
+            </>
+          ) : (
+            <>
+              <TextField
+                label={selectedUser ? "Nueva contrasena" : "Contrasena"}
+                hint={selectedUser ? "Deja vacio para conservar la actual." : "Necesaria para entrar al panel staff."}
+                type="password"
+                value={draft.password}
+                onChange={(value) => setDraft((current) => ({ ...current, password: value }))}
+                placeholder="Contrasena segura"
+              />
+              <div className="context-card">
+                <span>Acceso de respaldo</span>
+                <strong>Resuelto desde servidor</strong>
+                <small>Existe una via de recuperacion admin por variables de entorno para no depender de una sola persona.</small>
+              </div>
+            </>
+          )}
+
+          <div className="form-submit-row">
+            <button className="btn btn-primary" type="button" onClick={save} disabled={saving || removing}>
+              {saving ? "Guardando..." : selectedUser ? "Guardar usuario" : "Crear usuario"}
+            </button>
+            <button className="btn btn-ghost" type="button" onClick={() => startNew(draft.role)} disabled={saving || removing}>
+              Limpiar
+            </button>
+            {selectedUser ? (
+              <button className="btn btn-ghost-danger" type="button" onClick={remove} disabled={saving || removing}>
+                {removing ? "Quitando..." : "Quitar usuario"}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [tab, setTab] = useState("review");
   const [employees, setEmployees] = useState([]);
   const canAccessGaspro = user.role === "admin";
+  const canAccessAdmin = user.role === "admin";
+
+  const loadEmployees = async () => {
+    try {
+      const data = await api("/api/users?role=employee", {}, token);
+      setEmployees(data);
+    } catch {
+      setEmployees([]);
+    }
+  };
 
   useEffect(() => {
-    api("/api/users?role=employee", {}, token)
-      .then((data) => setEmployees(data))
-      .catch(() => setEmployees([]));
+    loadEmployees();
   }, [token]);
+
+  const currentViewLabel =
+    tab === "review" ? "Cierres" : tab === "gaspro" ? "Gaspro" : "Personal";
 
   return (
     <AppShell
@@ -1843,7 +2169,7 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
     >
       <div className="metric-grid">
         <MetricCard label="Equipo" value={employees.length} caption="Empleados activos" accent="#13315c" />
-        <MetricCard label="Vista" value={tab === "review" ? "Cierres" : "Gaspro"} caption="Panel actual" accent="#ff9f1a" />
+        <MetricCard label="Vista" value={currentViewLabel} caption="Panel actual" accent="#ff9f1a" />
         <MetricCard label="Rol" value={user.role} caption="Sesion actual" accent="#0f766e" />
       </div>
 
@@ -1856,9 +2182,16 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
             Gaspro
           </button>
         ) : null}
+        {canAccessAdmin ? (
+          <button className={cx("segmented-button", tab === "admin" && "is-active")} type="button" onClick={() => setTab("admin")}>
+            Personal
+          </button>
+        ) : null}
       </div>
 
-      {tab === "review" ? <ReviewPanel token={token} user={user} employees={employees} /> : <GasproPanel token={token} />}
+      {tab === "review" ? <ReviewPanel token={token} user={user} employees={employees} /> : null}
+      {tab === "gaspro" ? <GasproPanel token={token} /> : null}
+      {tab === "admin" ? <UserAdminPanel token={token} onRosterChange={loadEmployees} /> : null}
     </AppShell>
   );
 }

