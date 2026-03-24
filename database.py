@@ -263,6 +263,8 @@ def init_db():
         ("status", "TEXT NOT NULL DEFAULT 'draft'"),
         ("created_by_user_id", "INTEGER REFERENCES users(id)"),
         ("edited_by_user_id", "INTEGER REFERENCES users(id)"),
+        ("submitted_at", "TIMESTAMP NOT NULL DEFAULT NOW()"),
+        ("enviado_at", "TIMESTAMP DEFAULT NOW()"),
         ("editable_until", "TIMESTAMP"),
         ("document_reviewed_at", "TIMESTAMP"),
         ("reconciled_at", "TIMESTAMP"),
