@@ -105,6 +105,7 @@ def ensure_jsonb_column(cur, table: str, column: str, default_sql: str):
     if row[0] == "jsonb":
         return
 
+    cur.execute(f"ALTER TABLE {table} ALTER COLUMN {column} DROP DEFAULT")
     cur.execute(
         f"""
         ALTER TABLE {table}
