@@ -18,7 +18,7 @@ const VOUCHER_FIELDS = [
 const MOVEMENT_SECTIONS = [
   {
     key: "creditos",
-    index: "03",
+    index: "04",
     title: "Creditos",
     subtitle: "",
     accent: "#6c63ff",
@@ -31,8 +31,22 @@ const MOVEMENT_SECTIONS = [
     ],
   },
   {
+    key: "mercaderia_credito",
+    index: "05",
+    title: "Mercaderia a credito",
+    subtitle: "Se suma al total de creditos",
+    accent: "#7c3aed",
+    layout: "detailed",
+    addLabel: "Agregar mercaderia a credito",
+    fields: [
+      { key: "cliente", label: "Cliente", placeholder: "Nombre del cliente" },
+      { key: "referencia", label: "Referencia", placeholder: "Factura o detalle" },
+      { key: "monto_reportado", label: "Monto", kind: "money", span: 2 },
+    ],
+  },
+  {
     key: "sinpes",
-    index: "04",
+    index: "06",
     title: "SINPE movil",
     subtitle: "",
     accent: "#0f9d76",
@@ -43,7 +57,7 @@ const MOVEMENT_SECTIONS = [
   },
   {
     key: "vales",
-    index: "05",
+    index: "07",
     title: "Vales",
     subtitle: "",
     accent: "#d97706",
@@ -54,7 +68,7 @@ const MOVEMENT_SECTIONS = [
   },
   {
     key: "pagos",
-    index: "06",
+    index: "08",
     title: "Pagos realizados",
     subtitle: "",
     accent: "#d94b4b",
@@ -279,6 +293,7 @@ function emptyForm(defaultTurno = "1") {
     fecha: new Date().toISOString().slice(0, 10),
     turno: defaultTurno || "1",
     datafono: "",
+    mercaderia_contado: "",
     vouchers: {
       bcr_qty: "",
       bcr_monto: "",
@@ -294,6 +309,7 @@ function emptyForm(defaultTurno = "1") {
       fleet_dav_monto: "",
     },
     creditos: [],
+    mercaderia_credito: [],
     sinpes: [],
     depositos: [],
     vales: [],
@@ -320,7 +336,10 @@ function summarizePayload(payload) {
   );
   const sumItems = (items) => (items || []).reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0);
 
-  const totalCreditos = sumItems(payload?.creditos);
+  const totalMercaderiaContado = parseAmount(payload?.mercaderia_contado);
+  const totalCreditosDirectos = sumItems(payload?.creditos);
+  const totalMercaderiaCredito = sumItems(payload?.mercaderia_credito);
+  const totalCreditos = totalCreditosDirectos + totalMercaderiaCredito;
   const totalSinpes = sumItems(payload?.sinpes);
   const totalDepositos = sumItems(payload?.depositos);
   const totalVales = sumItems(payload?.vales);
@@ -328,13 +347,17 @@ function summarizePayload(payload) {
 
   return {
     totalVouchers: vouchers,
+    totalMercaderiaContado,
     totalCreditos,
+    totalCreditosDirectos,
+    totalMercaderiaCredito,
     totalSinpes,
     totalDepositos,
     totalVales,
     totalPagos,
     totalReportado:
       vouchers +
+      totalMercaderiaContado +
       totalCreditos +
       totalSinpes +
       totalDepositos +
@@ -347,7 +370,10 @@ function normalizeSummary(summary) {
   if (!summary) return null;
   return {
     totalVouchers: parseAmount(summary.totalVouchers ?? summary.total_vouchers),
+    totalMercaderiaContado: parseAmount(summary.totalMercaderiaContado ?? summary.total_mercaderia_contado),
     totalCreditos: parseAmount(summary.totalCreditos ?? summary.total_creditos),
+    totalCreditosDirectos: parseAmount(summary.totalCreditosDirectos ?? summary.total_creditos_directos),
+    totalMercaderiaCredito: parseAmount(summary.totalMercaderiaCredito ?? summary.total_mercaderia_credito),
     totalSinpes: parseAmount(summary.totalSinpes ?? summary.total_sinpes),
     totalDepositos: parseAmount(summary.totalDepositos ?? summary.total_depositos),
     totalVales: parseAmount(summary.totalVales ?? summary.total_vales),
@@ -622,7 +648,10 @@ function SummaryBoard({ payload, summary, compact = false }) {
   const totals = normalizeSummary(summary) || summarizePayload(payload || emptyForm());
   const rows = [
     { label: "Vouchers", value: totals.totalVouchers, tone: "amber" },
-    { label: "Creditos", value: totals.totalCreditos, tone: "indigo" },
+    { label: "Mercaderia contado", value: totals.totalMercaderiaContado, tone: "teal" },
+    { label: "Creditos", value: totals.totalCreditosDirectos || 0, tone: "indigo", indent: false },
+    { label: "Mercaderia a credito", value: totals.totalMercaderiaCredito || 0, tone: "violet", indent: false },
+    { label: "Total creditos", value: totals.totalCreditos, tone: "indigo", isSub: true },
     { label: "SINPE movil", value: totals.totalSinpes, tone: "emerald" },
     { label: "Depositos", value: totals.totalDepositos, tone: "navy" },
     { label: "Vales", value: totals.totalVales, tone: "rust" },
@@ -633,7 +662,7 @@ function SummaryBoard({ payload, summary, compact = false }) {
     <div className={cx("summary-board", compact && "summary-board-compact")}>
       <div className="summary-list">
         {rows.map((row) => (
-          <div key={row.label} className="summary-row">
+          <div key={row.label} className={cx("summary-row", row.isSub && "summary-row-sub")}>
             <div className="summary-row-copy">
               <span className={cx("summary-dot", `summary-${row.tone}`)} />
               <span>{row.label}</span>
@@ -936,6 +965,7 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
 
   const movementGroups = [
     { title: "Creditos", accent: "#6c63ff", items: payload.creditos || [] },
+    { title: "Mercaderia a credito", accent: "#7c3aed", items: payload.mercaderia_credito || [] },
     { title: "SINPE movil", accent: "#0f9d76", items: payload.sinpes || [] },
     { title: "Vales", accent: "#d97706", items: payload.vales || [] },
     { title: "Pagos", accent: "#d94b4b", items: payload.pagos || [] },
@@ -981,6 +1011,14 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
       <SummaryBoard payload={payload} summary={reportadoSummary} compact />
 
       <div className="detail-grid">
+        {parseAmount(payload.mercaderia_contado) > 0 && (
+          <DetailList title="Mercaderia de contado" accent="#0f766e" items={[{
+            id: "merc-contado",
+            title: "Mercaderia de contado",
+            meta: "Venta directa",
+            value: `CRC ${money(payload.mercaderia_contado)}`,
+          }]} />
+        )}
         <DetailList title="Vouchers" accent="#ff9f1a" items={vouchers} />
         {depositos.length > 0 && <DetailList title="Depositos" accent="#13315c" items={depositos} />}
         {movementGroups.map((group) => (
@@ -1043,7 +1081,7 @@ function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, chil
 function LoginScreen({ onLogin, isDark, onToggleTheme }) {
   const [mode, setMode] = useState("employee");
   const [pin, setPin] = useState("");
-  const [username, setUsername] = useState("supervisor");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -1084,16 +1122,16 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
         </section>
 
         <section className="auth-card">
-          <div className="eyebrow">Acceso</div>
-          <h2>Entra a tu panel</h2>
-          <p>Elige tu acceso y continua.</p>
+          <div className="eyebrow">Iniciar sesion</div>
+          <h2>Bienvenido</h2>
+          <p>Selecciona tu tipo de acceso para continuar.</p>
 
-          <div className="segmented-control">
+          <div className="segmented-control segmented-control-3">
             <button className={cx("segmented-button", mode === "employee" && "is-active")} type="button" onClick={() => setMode("employee")}>
-              Empleado
+              Pistero (PIN)
             </button>
             <button className={cx("segmented-button", mode === "staff" && "is-active")} type="button" onClick={() => setMode("staff")}>
-              Supervisor
+              Admin / Supervisor
             </button>
             <button className={cx("segmented-button", mode === "tienda" && "is-active")} type="button" onClick={() => setMode("tienda")}>
               Tienda
@@ -1103,19 +1141,24 @@ function LoginScreen({ onLogin, isDark, onToggleTheme }) {
           <form className="auth-form" onSubmit={submit}>
             {mode === "employee" ? (
               <>
-                <FieldShell label="Clave de colaborador" hint="Usa la clave asignada por administracion">
+                <FieldShell label="PIN de pistero" hint="Ingresa el PIN que te asigno el administrador">
                   <input
                     className="field-input"
                     type="password"
                     value={pin}
                     onChange={(event) => setPin(event.target.value)}
-                    placeholder="Ingresa tu clave"
+                    placeholder="Tu PIN de acceso"
                   />
                 </FieldShell>
               </>
+            ) : mode === "tienda" ? (
+              <>
+                <TextField label="Usuario de tienda" value={username} onChange={setUsername} placeholder="usuario de tienda" />
+                <TextField label="Contrasena" type="password" value={password} onChange={setPassword} placeholder="Ingresa tu contrasena" />
+              </>
             ) : (
               <>
-                <TextField label="Usuario" value={username} onChange={setUsername} placeholder={mode === "tienda" ? "usuario de tienda" : "supervisor"} />
+                <TextField label="Usuario" value={username} onChange={setUsername} placeholder="admin o supervisor" />
                 <TextField label="Contrasena" type="password" value={password} onChange={setPassword} placeholder="Ingresa tu contrasena" />
               </>
             )}
@@ -1146,10 +1189,10 @@ function CierreForm({
   const summary = useMemo(() => summarizePayload(form), [form]);
   const movementCount = useMemo(
     () =>
-      ["creditos", "sinpes", "depositos", "vales", "pagos"].reduce(
+      ["creditos", "mercaderia_credito", "sinpes", "depositos", "vales", "pagos"].reduce(
         (total, key) => total + (form[key] || []).length,
         0,
-      ),
+      ) + (parseAmount(form.mercaderia_contado) > 0 ? 1 : 0),
     [form],
   );
 
@@ -1217,6 +1260,20 @@ function CierreForm({
 
       <FormSection
         index="02"
+        title="Mercaderia de contado"
+        accent="#0f766e"
+      >
+        <div className="field-grid field-grid-3">
+          <MoneyField
+            label="Monto mercaderia de contado"
+            value={form.mercaderia_contado || ""}
+            onChange={(value) => setForm({ ...form, mercaderia_contado: value })}
+          />
+        </div>
+      </FormSection>
+
+      <FormSection
+        index="03"
         title="Vouchers y tarjetas"
         accent="#ff9f1a"
       >
@@ -1242,7 +1299,7 @@ function CierreForm({
       ))}
 
       <FormSection
-        index="07"
+        index="09"
         title="Observaciones"
         accent="#475569"
       >
@@ -1311,6 +1368,8 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
     setDraft({
       ...emptyForm(user.default_turno),
       ...payload,
+      mercaderia_contado: payload.mercaderia_contado || "",
+      mercaderia_credito: payload.mercaderia_credito || [],
       depositos: payload.depositos || [],
       employee_id: cierre.employee_id || null,
     });
@@ -1471,6 +1530,160 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   );
 }
 
+function AdminCierreEditor({ cierre, token, onSaved }) {
+  const payload = cierre?.reportado_json || {};
+  const [editPayload, setEditPayload] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    if (!cierre) { setEditPayload(null); return; }
+    const p = cierre.reportado_json || {};
+    setEditPayload({
+      ...p,
+      mercaderia_contado: p.mercaderia_contado || "",
+      creditos: (p.creditos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+      mercaderia_credito: (p.mercaderia_credito || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+      sinpes: (p.sinpes || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+      depositos: (p.depositos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+      vales: (p.vales || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+      pagos: (p.pagos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+    });
+    setMessage(null);
+  }, [cierre?.id]);
+
+  if (!editPayload) return null;
+
+  const EDITABLE_SECTIONS = [
+    { key: "creditos", title: "Creditos", fields: ["cliente", "referencia", "monto_reportado"], accent: "#6c63ff" },
+    { key: "mercaderia_credito", title: "Mercaderia a credito", fields: ["cliente", "referencia", "monto_reportado"], accent: "#7c3aed" },
+    { key: "sinpes", title: "SINPE movil", fields: ["comprobante", "monto"], accent: "#0f9d76" },
+    { key: "depositos", title: "Depositos", fields: ["referencia", "monto_reportado"], accent: "#13315c" },
+    { key: "vales", title: "Vales", fields: ["comprobante", "monto"], accent: "#d97706" },
+    { key: "pagos", title: "Pagos", fields: ["comprobante", "monto"], accent: "#d94b4b" },
+  ];
+
+  const updateItem = (sectionKey, index, fieldKey, value) => {
+    setEditPayload((prev) => ({
+      ...prev,
+      [sectionKey]: prev[sectionKey].map((item, i) => {
+        if (i !== index) return item;
+        const updated = { ...item, [fieldKey]: value };
+        if (fieldKey === "monto") updated.monto_reportado = value;
+        if (fieldKey === "comprobante") updated.referencia = value;
+        return updated;
+      }),
+    }));
+  };
+
+  const removeItem = (sectionKey, index) => {
+    setEditPayload((prev) => ({
+      ...prev,
+      [sectionKey]: prev[sectionKey].filter((_, i) => i !== index),
+    }));
+  };
+
+  const addItem = (sectionKey) => {
+    const section = EDITABLE_SECTIONS.find((s) => s.key === sectionKey);
+    const isCompact = section?.fields.includes("comprobante");
+    setEditPayload((prev) => ({
+      ...prev,
+      [sectionKey]: [...prev[sectionKey], isCompact ? emptyCompactMovement() : emptyMovement()],
+    }));
+  };
+
+  const saveEdits = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api(`/api/cierres/${cierre.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          ...editPayload,
+          employee_id: cierre.employee_id,
+        }),
+      }, token);
+      setMessage({ tone: "success", text: "Cierre actualizado correctamente." });
+      onSaved?.();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fieldLabel = (key) => {
+    const labels = { cliente: "Cliente", referencia: "Referencia", monto_reportado: "Monto", comprobante: "Comprobante", monto: "Monto" };
+    return labels[key] || key;
+  };
+
+  return (
+    <div className="admin-editor-stack">
+      {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+
+      <div className="admin-editor-field">
+        <MoneyField
+          label="Mercaderia de contado"
+          value={editPayload.mercaderia_contado || ""}
+          onChange={(v) => setEditPayload((prev) => ({ ...prev, mercaderia_contado: v }))}
+        />
+      </div>
+
+      {EDITABLE_SECTIONS.map((section) => {
+        const items = editPayload[section.key] || [];
+        if (items.length === 0 && section.key !== "creditos" && section.key !== "mercaderia_credito") return null;
+        return (
+          <div key={section.key} className="admin-editor-section" style={{ "--editor-accent": section.accent }}>
+            <div className="admin-editor-section-head">
+              <strong>{section.title}</strong>
+              <span className="section-chip">{items.length} registros</span>
+            </div>
+            {items.map((item, index) => (
+              <div key={item.id || index} className="admin-editor-item">
+                <div className="admin-editor-item-head">
+                  <strong>{section.title} #{index + 1}</strong>
+                  <button className="btn btn-ghost-danger btn-sm" type="button" onClick={() => removeItem(section.key, index)}>
+                    Quitar
+                  </button>
+                </div>
+                <div className="admin-editor-fields">
+                  {section.fields.map((fieldKey) => (
+                    <div key={fieldKey} className={fieldKey.includes("monto") ? "admin-editor-field-money" : "admin-editor-field"}>
+                      {fieldKey.includes("monto") ? (
+                        <MoneyField
+                          label={fieldLabel(fieldKey)}
+                          value={movementAmountValue(item)}
+                          onChange={(v) => updateItem(section.key, index, fieldKey, v)}
+                        />
+                      ) : (
+                        <TextField
+                          label={fieldLabel(fieldKey)}
+                          value={item[fieldKey] || ""}
+                          onChange={(v) => updateItem(section.key, index, fieldKey, v)}
+                          placeholder={fieldLabel(fieldKey)}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button className="btn-add-movement" type="button" onClick={() => addItem(section.key)}>
+              + Agregar {section.title.toLowerCase()}
+            </button>
+          </div>
+        );
+      })}
+
+      <div className="form-submit-row">
+        <button className="btn btn-primary" type="button" onClick={saveEdits} disabled={saving}>
+          {saving ? "Guardando..." : "Guardar cambios al cierre"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ReviewPanel({ token, user, employees = [] }) {
   const [cierres, setCierres] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -1483,6 +1696,7 @@ function ReviewPanel({ token, user, employees = [] }) {
   const [saving, setSaving] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [message, setMessage] = useState(null);
+  const [editMode, setEditMode] = useState(false);
   const isAdmin = user?.role === "admin";
 
   const load = async () => {
@@ -1546,6 +1760,7 @@ function ReviewPanel({ token, user, employees = [] }) {
           ? normalizeStatusValue(selected.status)
           : "validated",
       );
+      setEditMode(false);
     }
   }, [selected]);
 
@@ -1670,14 +1885,31 @@ function ReviewPanel({ token, user, employees = [] }) {
               <StatusPill status={selected.status} />
               <span className="meta-chip">Total reportado: CRC {money(selected.resumen_reportado?.total_reportado)}</span>
               {selected.gaspro_mode ? <span className="meta-chip">Gaspro: {selected.gaspro_mode}</span> : null}
+              {isAdmin && selected.tipo !== "tienda" ? (
+                <button
+                  className={cx("btn", editMode ? "btn-ghost-danger" : "btn-secondary", "btn-sm")}
+                  type="button"
+                  onClick={() => setEditMode(!editMode)}
+                >
+                  {editMode ? "Cancelar edicion" : "Editar movimientos"}
+                </button>
+              ) : null}
             </div>
 
-            <CierreSnapshot
-              payload={selected.reportado_json}
-              reportadoSummary={selected.resumen_reportado}
-              validadoSummary={selected.resumen_validado}
-              auditNotes={selected.audit_notes}
-            />
+            {editMode && isAdmin && selected.tipo !== "tienda" ? (
+              <AdminCierreEditor
+                cierre={selected}
+                token={token}
+                onSaved={() => { setEditMode(false); load(); }}
+              />
+            ) : (
+              <CierreSnapshot
+                payload={selected.reportado_json}
+                reportadoSummary={selected.resumen_reportado}
+                validadoSummary={selected.resumen_validado}
+                auditNotes={selected.audit_notes}
+              />
+            )}
 
             <div className="review-form-grid">
               <SelectField label="Nuevo estado" value={status} onChange={setStatus}>

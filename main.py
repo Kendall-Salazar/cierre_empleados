@@ -45,7 +45,7 @@ VOUCHER_AMOUNT_KEYS = [
     "fleet_bncr_monto",
     "fleet_dav_monto",
 ]
-MOVEMENT_FIELDS = ("creditos", "sinpes", "depositos", "vales", "pagos")
+MOVEMENT_FIELDS = ("creditos", "mercaderia_credito", "sinpes", "depositos", "vales", "pagos")
 COMPACT_MOVEMENT_FIELDS = {"sinpes", "vales", "pagos"}
 EDITABLE_EMPLOYEE_STATUSES = {"submitted"}
 REVIEWABLE_STATUSES = {"submitted", "validated"}
@@ -123,8 +123,10 @@ class CierrePayload(BaseModel):
     fecha: str
     turno: str
     datafono: Optional[str] = ""
+    mercaderia_contado: Optional[str] = ""
     vouchers: VouchersModel = Field(default_factory=VouchersModel)
     creditos: List[MovementItem] = Field(default_factory=list)
+    mercaderia_credito: List[MovementItem] = Field(default_factory=list)
     sinpes: List[MovementItem] = Field(default_factory=list)
     depositos: List[MovementItem] = Field(default_factory=list)
     vales: List[MovementItem] = Field(default_factory=list)
@@ -348,6 +350,7 @@ def default_payload() -> Dict[str, Any]:
         "fecha": date.today().isoformat(),
         "turno": "1",
         "datafono": "",
+        "mercaderia_contado": "",
         "vouchers": {
             "bcr_qty": "", "bcr_monto": "",
             "bac_qty": "", "bac_monto": "",
@@ -357,6 +360,7 @@ def default_payload() -> Dict[str, Any]:
             "fleet_dav_qty": "", "fleet_dav_monto": "",
         },
         "creditos": [],
+        "mercaderia_credito": [],
         "sinpes": [],
         "depositos": [],
         "vales": [],
@@ -381,6 +385,7 @@ def normalize_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 
     payload["turno"] = str(data.get("turno", payload["turno"]) or payload["turno"]).strip() or payload["turno"]
     payload["datafono"] = str(data.get("datafono", payload["datafono"]) or "").strip()
+    payload["mercaderia_contado"] = str(data.get("mercaderia_contado", "") or "").strip()
     payload["observaciones"] = str(data.get("observaciones", payload["observaciones"]) or "").strip()
 
     vouchers = data.get("vouchers") or {}
@@ -399,6 +404,7 @@ def normalize_payload(data: Dict[str, Any]) -> Dict[str, Any]:
 def compute_summary(payload: Dict[str, Any], validated: bool = False) -> Dict[str, float]:
     vouchers = payload.get("vouchers", {})
     total_vouchers = sum(parse_decimal(vouchers.get(key)) for key in VOUCHER_AMOUNT_KEYS)
+    total_mercaderia_contado = parse_decimal(payload.get("mercaderia_contado"))
     totals = {}
     for field in MOVEMENT_FIELDS:
         subtotal = Decimal("0")
@@ -409,10 +415,16 @@ def compute_summary(payload: Dict[str, Any], validated: bool = False) -> Dict[st
                 amount = parse_decimal(item.get("monto", item.get("monto_reportado", 0)))
             subtotal += amount
         totals[field] = subtotal
-    total_reportado = total_vouchers + totals["creditos"] + totals["sinpes"] + totals["depositos"] + totals["vales"] + totals["pagos"]
+    total_creditos_directos = totals["creditos"]
+    total_mercaderia_credito = totals.get("mercaderia_credito", Decimal("0"))
+    total_creditos = total_creditos_directos + total_mercaderia_credito
+    total_reportado = total_vouchers + total_mercaderia_contado + total_creditos + totals["sinpes"] + totals["depositos"] + totals["vales"] + totals["pagos"]
     return {
         "total_vouchers": decimal_to_float(total_vouchers),
-        "total_creditos": decimal_to_float(totals["creditos"]),
+        "total_mercaderia_contado": decimal_to_float(total_mercaderia_contado),
+        "total_creditos": decimal_to_float(total_creditos),
+        "total_creditos_directos": decimal_to_float(total_creditos_directos),
+        "total_mercaderia_credito": decimal_to_float(total_mercaderia_credito),
         "total_sinpes": decimal_to_float(totals["sinpes"]),
         "total_depositos": decimal_to_float(totals["depositos"]),
         "total_vales": decimal_to_float(totals["vales"]),
