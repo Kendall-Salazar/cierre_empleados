@@ -452,10 +452,10 @@ function useTheme() {
 }
 
 function useSession() {
-  const [token, setToken] = useState(() => localStorage.getItem("cierre_token") || "");
+  const [token, setToken] = useState(() => sessionStorage.getItem("cierre_token") || "");
   const [user, setUser] = useState(() => {
     try {
-      const raw = localStorage.getItem("cierre_user");
+      const raw = sessionStorage.getItem("cierre_user");
       return raw ? JSON.parse(raw) : null;
     } catch {
       return null;
@@ -465,10 +465,10 @@ function useSession() {
   const save = (nextToken, nextUser) => {
     setToken(nextToken);
     setUser(nextUser);
-    if (nextToken) localStorage.setItem("cierre_token", nextToken);
-    else localStorage.removeItem("cierre_token");
-    if (nextUser) localStorage.setItem("cierre_user", JSON.stringify(nextUser));
-    else localStorage.removeItem("cierre_user");
+    if (nextToken) sessionStorage.setItem("cierre_token", nextToken);
+    else sessionStorage.removeItem("cierre_token");
+    if (nextUser) sessionStorage.setItem("cierre_user", JSON.stringify(nextUser));
+    else sessionStorage.removeItem("cierre_user");
   };
 
   return { token, user, save, clear: () => save("", null) };
@@ -1496,21 +1496,21 @@ function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, chil
         <header className="shell-topbar">
           <div className="brand-lockup">
             <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="brand-logo logo-contain" />
-            <div>
+            <div className="brand-copy">
               <div className="brand-kicker">Servicentro La Marina</div>
               <div className="brand-title">Cierre de caja</div>
             </div>
           </div>
 
           <div className="shell-copy">
-            <div className="eyebrow">{title}</div>
+            <span className="shell-page-label">{title}</span>
             <h1>{user.full_name}</h1>
           </div>
 
           <div className="shell-actions">
             <ThemeToggle isDark={isDark} onToggle={onToggleTheme} />
             <div className="shell-user-card">
-              <span className="user-role">{user.role}</span>
+              <span className="user-role">{ROLE_LABELS[user.role] || user.role}</span>
               <button className="btn btn-secondary" type="button" onClick={onLogout}>
                 Cerrar sesion
               </button>
@@ -1792,7 +1792,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
 
   useEffect(() => {
     load();
-  }, [token, isAdmin]);
+  }, [token]);
 
   useEffect(() => {
     if (draft.fecha && /^\d{4}-\d{2}-\d{2}$/.test(draft.fecha)) {
@@ -1977,37 +1977,49 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
 }
 
 function AdminCierreEditor({ cierre, token, onSaved }) {
-  const payload = cierre?.reportado_json || {};
   const [editPayload, setEditPayload] = useState(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
 
+  const ADMIN_SECTIONS = [
+    { key: "depositos", title: "Depositos", fields: ["referencia", "monto_reportado"], accent: "#13315c" },
+    { key: "creditos", title: "Creditos", fields: ["cliente", "referencia", "monto_reportado"], accent: "#6c63ff" },
+    { key: "mercaderia_credito", title: "Mercaderia a credito", fields: ["cliente", "referencia", "monto_reportado"], accent: "#7c3aed" },
+    { key: "sinpes", title: "SINPE movil", fields: ["comprobante", "monto"], accent: "#0f9d76" },
+    { key: "vales", title: "Vales", fields: ["comprobante", "monto", "cliente"], accent: "#d97706" },
+    { key: "pagos", title: "Pagos", fields: ["comprobante", "monto", "cliente"], accent: "#d94b4b" },
+  ];
+
   useEffect(() => {
     if (!cierre) { setEditPayload(null); return; }
     const p = cierre.reportado_json || {};
+    const ensureIds = (arr) => (arr || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() }));
     setEditPayload({
       ...p,
+      fecha: p.fecha || "",
+      turno: p.turno || "",
+      datafono: p.datafono || "",
+      observaciones: p.observaciones || "",
       mercaderia_contado: p.mercaderia_contado || "",
-      creditos: (p.creditos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
-      mercaderia_credito: (p.mercaderia_credito || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
-      sinpes: (p.sinpes || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
-      depositos: (p.depositos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
-      vales: (p.vales || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
-      pagos: (p.pagos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })),
+      vouchers: { ...emptyForm().vouchers, ...(p.vouchers || {}) },
+      creditos: ensureIds(p.creditos),
+      mercaderia_credito: ensureIds(p.mercaderia_credito),
+      sinpes: ensureIds(p.sinpes),
+      depositos: ensureIds(p.depositos),
+      vales: ensureIds(p.vales),
+      pagos: ensureIds(p.pagos),
     });
     setMessage(null);
   }, [cierre?.id]);
 
   if (!editPayload) return null;
 
-  const EDITABLE_SECTIONS = [
-    { key: "creditos", title: "Creditos", fields: ["cliente", "referencia", "monto_reportado"], accent: "#6c63ff" },
-    { key: "mercaderia_credito", title: "Mercaderia a credito", fields: ["cliente", "referencia", "monto_reportado"], accent: "#7c3aed" },
-    { key: "sinpes", title: "SINPE movil", fields: ["comprobante", "monto"], accent: "#0f9d76" },
-    { key: "depositos", title: "Depositos", fields: ["referencia", "monto_reportado"], accent: "#13315c" },
-    { key: "vales", title: "Vales", fields: ["comprobante", "monto"], accent: "#d97706" },
-    { key: "pagos", title: "Pagos", fields: ["comprobante", "monto"], accent: "#d94b4b" },
-  ];
+  const updateField = (key, value) => setEditPayload((prev) => ({ ...prev, [key]: value }));
+
+  const updateVoucher = (key, value) => setEditPayload((prev) => ({
+    ...prev,
+    vouchers: { ...prev.vouchers, [key]: value },
+  }));
 
   const updateItem = (sectionKey, index, fieldKey, value) => {
     setEditPayload((prev) => ({
@@ -2030,12 +2042,25 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
   };
 
   const addItem = (sectionKey) => {
-    const section = EDITABLE_SECTIONS.find((s) => s.key === sectionKey);
+    const section = ADMIN_SECTIONS.find((s) => s.key === sectionKey);
     const isCompact = section?.fields.includes("comprobante");
     setEditPayload((prev) => ({
       ...prev,
-      [sectionKey]: [...prev[sectionKey], isCompact ? emptyCompactMovement() : emptyMovement()],
+      [sectionKey]: [...(prev[sectionKey] || []), isCompact ? { ...emptyCompactMovement(), cliente: "" } : emptyMovement()],
     }));
+  };
+
+  const moveItem = (fromSection, index, toSection) => {
+    if (fromSection === toSection) return;
+    setEditPayload((prev) => {
+      const item = prev[fromSection][index];
+      const moved = { ...item, id: crypto.randomUUID() };
+      return {
+        ...prev,
+        [fromSection]: prev[fromSection].filter((_, i) => i !== index),
+        [toSection]: [...(prev[toSection] || []), moved],
+      };
+    });
   };
 
   const saveEdits = async () => {
@@ -2067,17 +2092,60 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
     <div className="admin-editor-stack">
       {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
 
-      <div className="admin-editor-field">
-        <MoneyField
-          label="Mercaderia de contado"
-          value={editPayload.mercaderia_contado || ""}
-          onChange={(v) => setEditPayload((prev) => ({ ...prev, mercaderia_contado: v }))}
-        />
+      {/* --- Meta fields --- */}
+      <div className="admin-editor-section" style={{ "--editor-accent": "#475569" }}>
+        <div className="admin-editor-section-head">
+          <strong>Datos generales</strong>
+        </div>
+        <div className="admin-editor-fields">
+          <div className="admin-editor-field">
+            <TextField label="Fecha" value={editPayload.fecha || ""} onChange={(v) => updateField("fecha", v)} placeholder="YYYY-MM-DD" />
+          </div>
+          <div className="admin-editor-field">
+            <SelectField label="Turno" value={editPayload.turno || ""} onChange={(v) => updateField("turno", v)}>
+              <option value="1">Turno 1</option>
+              <option value="2">Turno 2</option>
+              <option value="3">Turno 3</option>
+            </SelectField>
+          </div>
+          <div className="admin-editor-field">
+            <TextField label="Datafono" value={editPayload.datafono || ""} onChange={(v) => updateField("datafono", v)} placeholder="Numero de datafono" />
+          </div>
+        </div>
+        <div className="admin-editor-fields" style={{ marginTop: 8 }}>
+          <div className="admin-editor-field" style={{ flex: "1 1 100%" }}>
+            <TextAreaField label="Observaciones" value={editPayload.observaciones || ""} onChange={(v) => updateField("observaciones", v)} placeholder="Notas u observaciones" />
+          </div>
+        </div>
       </div>
 
-      {EDITABLE_SECTIONS.map((section) => {
+      {/* --- Mercaderia contado --- */}
+      <div className="admin-editor-section" style={{ "--editor-accent": "#0f766e" }}>
+        <div className="admin-editor-section-head">
+          <strong>Mercaderia de contado</strong>
+        </div>
+        <div className="admin-editor-fields">
+          <div className="admin-editor-field-money">
+            <MoneyField
+              label="Monto mercaderia de contado"
+              value={editPayload.mercaderia_contado || ""}
+              onChange={(v) => updateField("mercaderia_contado", v)}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* --- Vouchers --- */}
+      <div className="admin-editor-section" style={{ "--editor-accent": "#ff9f1a" }}>
+        <div className="admin-editor-section-head">
+          <strong>Vouchers y tarjetas</strong>
+        </div>
+        <VoucherGrid vouchers={editPayload.vouchers || {}} setVoucher={updateVoucher} />
+      </div>
+
+      {/* --- Movement sections --- */}
+      {ADMIN_SECTIONS.map((section) => {
         const items = editPayload[section.key] || [];
-        if (items.length === 0 && section.key !== "creditos" && section.key !== "mercaderia_credito") return null;
         return (
           <div key={section.key} className="admin-editor-section" style={{ "--editor-accent": section.accent }}>
             <div className="admin-editor-section-head">
@@ -2088,9 +2156,21 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
               <div key={item.id || index} className="admin-editor-item">
                 <div className="admin-editor-item-head">
                   <strong>{section.title} #{index + 1}</strong>
-                  <button className="btn btn-ghost-danger btn-sm" type="button" onClick={() => removeItem(section.key, index)}>
-                    Quitar
-                  </button>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <select
+                      className="field-input admin-move-select"
+                      value=""
+                      onChange={(e) => { if (e.target.value) moveItem(section.key, index, e.target.value); }}
+                    >
+                      <option value="">Mover a...</option>
+                      {ADMIN_SECTIONS.filter((s) => s.key !== section.key).map((s) => (
+                        <option key={s.key} value={s.key}>{s.title}</option>
+                      ))}
+                    </select>
+                    <button className="btn btn-ghost-danger btn-sm" type="button" onClick={() => removeItem(section.key, index)}>
+                      Quitar
+                    </button>
+                  </div>
                 </div>
                 <div className="admin-editor-fields">
                   {section.fields.map((fieldKey) => (
@@ -2124,6 +2204,72 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
       <div className="form-submit-row">
         <button className="btn btn-primary" type="button" onClick={saveEdits} disabled={saving}>
           {saving ? "Guardando..." : "Guardar cambios al cierre"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SupervisorDepositEditor({ cierre, token, onSaved }) {
+  const [deposits, setDeposits] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    if (!cierre) { setDeposits([]); return; }
+    const p = cierre.reportado_json || {};
+    setDeposits((p.depositos || []).map((item) => ({ ...item, id: item.id || crypto.randomUUID() })));
+    setMessage(null);
+  }, [cierre?.id]);
+
+  const updateDeposit = (index, key, value) => setDeposits((prev) => prev.map((d, i) => (i === index ? { ...d, [key]: value } : d)));
+  const removeDeposit = (index) => setDeposits((prev) => prev.filter((_, i) => i !== index));
+  const addDeposit = () => setDeposits((prev) => [...prev, { id: crypto.randomUUID(), referencia: "", monto_reportado: "" }]);
+
+  const saveEdits = async () => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      const payload = { ...(cierre.reportado_json || {}), depositos: deposits, employee_id: cierre.employee_id };
+      await api(`/api/cierres/${cierre.id}`, { method: "PUT", body: JSON.stringify(payload) }, token);
+      setMessage({ tone: "success", text: "Depositos actualizados correctamente." });
+      onSaved?.();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="admin-editor-stack">
+      {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+      <div className="admin-editor-section" style={{ "--editor-accent": "#13315c" }}>
+        <div className="admin-editor-section-head">
+          <strong>Depositos</strong>
+          <span className="section-chip">{deposits.length} registros</span>
+        </div>
+        {deposits.map((dep, index) => (
+          <div key={dep.id || index} className="admin-editor-item">
+            <div className="admin-editor-item-head">
+              <strong>Deposito #{index + 1}</strong>
+              <button className="btn btn-ghost-danger btn-sm" type="button" onClick={() => removeDeposit(index)}>Quitar</button>
+            </div>
+            <div className="admin-editor-fields">
+              <div className="admin-editor-field">
+                <TextField label="Referencia" value={dep.referencia || ""} onChange={(v) => updateDeposit(index, "referencia", v)} placeholder="ID del comprobante" />
+              </div>
+              <div className="admin-editor-field-money">
+                <MoneyField label="Monto" value={dep.monto_reportado || ""} onChange={(v) => updateDeposit(index, "monto_reportado", v)} />
+              </div>
+            </div>
+          </div>
+        ))}
+        <button className="btn-add-movement" type="button" onClick={addDeposit}>+ Agregar deposito</button>
+      </div>
+      <div className="form-submit-row">
+        <button className="btn btn-primary" type="button" onClick={saveEdits} disabled={saving}>
+          {saving ? "Guardando..." : "Guardar depositos"}
         </button>
       </div>
     </div>
@@ -2183,6 +2329,7 @@ function ReviewPanel({ token, user, employees = [] }) {
   const [selectedDetail, setSelectedDetail] = useState(null);
   const [summaryNotes, setSummaryNotes] = useState("");
   const [query, setQuery] = useState("");
+  const [dateQuery, setDateQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
@@ -2191,8 +2338,9 @@ function ReviewPanel({ token, user, employees = [] }) {
   const [reconciling, setReconciling] = useState(false);
   const [message, setMessage] = useState(null);
   const [editMode, setEditMode] = useState(false);
+  const [viewTrash, setViewTrash] = useState(false);
   const isAdmin = user?.role === "admin";
-  const visibleStatusOptions = Object.entries(STATUS_META).filter(([value]) => isAdmin || value !== "deleted");
+  const visibleStatusOptions = Object.entries(STATUS_META).filter(([value]) => value !== "deleted" && (isAdmin || value !== "deleted"));
 
   const load = async () => {
     setLoading(true);
@@ -2226,20 +2374,24 @@ function ReviewPanel({ token, user, employees = [] }) {
     load();
   }, [token, isAdmin]);
 
+  const trashCount = useMemo(() => cierres.filter((c) => normalizeStatusValue(c.status) === "deleted").length, [cierres]);
+
   const filtered = useMemo(
     () =>
       cierres.filter((cierre) => {
         const normalizedStatus = normalizeStatusValue(cierre.status);
-        if (normalizedStatus === "deleted" && (!isAdmin || statusFilter !== "deleted")) return false;
-        const matchesQuery =
-          !query ||
-          cierre.empleado?.toLowerCase().includes(query.toLowerCase()) ||
-          String(cierre.fecha).includes(query);
+        const isDeleted = normalizedStatus === "deleted";
+        if (viewTrash) return isDeleted;
+        if (isDeleted) return false;
+        const matchesName =
+          !query || cierre.empleado?.toLowerCase().includes(query.toLowerCase());
+        const matchesDate =
+          !dateQuery || String(cierre.fecha).includes(dateQuery);
         const matchesStatus = statusFilter === "all" || normalizedStatus === statusFilter;
         const matchesEmployee = employeeFilter === "all" || String(cierre.employee_id) === employeeFilter;
-        return matchesQuery && matchesStatus && matchesEmployee;
+        return matchesName && matchesDate && matchesStatus && matchesEmployee;
       }),
-    [cierres, query, statusFilter, employeeFilter, isAdmin],
+    [cierres, query, dateQuery, statusFilter, employeeFilter, isAdmin, viewTrash],
   );
 
   const employeeStats = useMemo(() => {
@@ -2390,7 +2542,7 @@ function ReviewPanel({ token, user, employees = [] }) {
         },
         token,
       );
-      setMessage({ tone: "success", text: "El cierre fue enviado a la papelera. Filtra por 'En papelera' si necesitas restaurarlo." });
+      setMessage({ tone: "success", text: "El cierre fue enviado a la papelera. Usa el boton 'Papelera' para verlo o restaurarlo." });
       await refreshCurrent(selectedDetail.id);
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
@@ -2417,34 +2569,48 @@ function ReviewPanel({ token, user, employees = [] }) {
   return (
     <div className="dashboard-grid review-dashboard-grid">
       <Panel
-        eyebrow="Bandeja QA"
-        title="Cierres en revision"
-        subtitle="Filtra por estado, empleado o fecha y entra directo al detalle que necesita atencion."
-        accent="#13315c"
+        eyebrow={viewTrash ? "Papelera" : "Listado"}
+        title={viewTrash ? "Cierres eliminados" : "Cierres registrados"}
+        subtitle={viewTrash ? "Cierres que fueron enviados a la papelera. Puedes restaurarlos desde el detalle." : "Busca por nombre o fecha y selecciona el cierre que necesitas revisar."}
+        accent={viewTrash ? "#e11d48" : "#13315c"}
       >
-        <div className="toolbar-grid">
-          <TextField label="Buscar" value={query} onChange={setQuery} placeholder="Empleado o fecha" />
-          <SelectField label="Estado" value={statusFilter} onChange={setStatusFilter}>
-            <option value="all">Todos los estados</option>
-            {visibleStatusOptions.map(([value, meta]) => (
-              <option key={value} value={value}>
-                {meta.label}
-              </option>
-            ))}
-          </SelectField>
-          {employees.length > 0 ? (
-            <SelectField label="Empleado" value={employeeFilter} onChange={setEmployeeFilter}>
-              <option value="all">Todos</option>
-              {employees.map((emp) => (
-                <option key={emp.id} value={String(emp.id)}>
-                  {emp.full_name}
+        {isAdmin ? (
+          <div className="trash-toggle-row">
+            <button className={cx("btn btn-sm", !viewTrash && "btn-primary")} type="button" onClick={() => setViewTrash(false)}>
+              Cierres
+            </button>
+            <button className={cx("btn btn-sm", viewTrash && "btn-ghost-danger")} type="button" onClick={() => setViewTrash(true)}>
+              Papelera{trashCount > 0 ? ` (${trashCount})` : ""}
+            </button>
+          </div>
+        ) : null}
+
+        {!viewTrash ? (
+          <div className="toolbar-grid">
+            <TextField label="Nombre" value={query} onChange={setQuery} placeholder="Buscar por nombre del empleado" />
+            <TextField label="Fecha" value={dateQuery} onChange={setDateQuery} placeholder="Ej: 2026-03-25" />
+            <SelectField label="Estado" value={statusFilter} onChange={setStatusFilter}>
+              <option value="all">Todos los estados</option>
+              {visibleStatusOptions.map(([value, meta]) => (
+                <option key={value} value={value}>
+                  {meta.label}
                 </option>
               ))}
             </SelectField>
-          ) : null}
-        </div>
+            {employees.length > 0 ? (
+              <SelectField label="Empleado" value={employeeFilter} onChange={setEmployeeFilter}>
+                <option value="all">Todos</option>
+                {employees.map((emp) => (
+                  <option key={emp.id} value={String(emp.id)}>
+                    {emp.full_name}
+                  </option>
+                ))}
+              </SelectField>
+            ) : null}
+          </div>
+        ) : null}
 
-        {employeeStats ? (
+        {!viewTrash && employeeStats ? (
           <div className="employee-stats-row">
             <span className="meta-chip">Cierres: {employeeStats.total}</span>
             <span className="meta-chip">Pendientes: {employeeStats.pending}</span>
@@ -2456,7 +2622,7 @@ function ReviewPanel({ token, user, employees = [] }) {
         {loading ? (
           <EmptyState title="Cargando" body="Consultando cierres." />
         ) : filtered.length === 0 ? (
-          <EmptyState title="Sin coincidencias" body="Ajusta la busqueda." />
+          <EmptyState title={viewTrash ? "Papelera vacia" : "Sin coincidencias"} body={viewTrash ? "No hay cierres eliminados." : "Ajusta la busqueda."} />
         ) : (
           <div className="selectable-list">
             {filtered.map((cierre) => (
@@ -2470,11 +2636,13 @@ function ReviewPanel({ token, user, employees = [] }) {
                   <strong>{cierre.empleado}</strong>
                   <span>{formatDateLabel(cierre.fecha)} / {cierre.tipo === "tienda" ? "Tienda" : `Turno ${cierre.turno || "-"}`}</span>
                   <small>
-                    {cierre.unresolved_note_count ? `${cierre.unresolved_note_count} nota(s) pendiente(s)` : "Sin notas pendientes"}
+                    {viewTrash
+                      ? (cierre.audit_notes || "Sin motivo registrado")
+                      : (cierre.unresolved_note_count ? `${cierre.unresolved_note_count} nota(s) pendiente(s)` : "Sin notas pendientes")}
                   </small>
                 </div>
                 <div className="selectable-card-meta">
-                  <StatusPill status={cierre.status} />
+                  {viewTrash ? null : <StatusPill status={cierre.status} />}
                   <strong>CRC {money(cierre.resumen_reportado?.total_reportado)}</strong>
                 </div>
               </button>
@@ -2484,9 +2652,9 @@ function ReviewPanel({ token, user, employees = [] }) {
       </Panel>
 
       <Panel
-        eyebrow="Consola QA"
+        eyebrow="Detalle"
         title={selectedDetail ? selectedDetail.empleado : "Selecciona un cierre"}
-        subtitle={selectedDetail ? `${formatDateLabel(selectedDetail.fecha)} / ${selectedDetail.tipo === "tienda" ? "Cierre de tienda" : `Turno ${selectedDetail.turno || "-"}`}` : "El detalle aparece aqui."}
+        subtitle={selectedDetail ? `${formatDateLabel(selectedDetail.fecha)} / ${selectedDetail.tipo === "tienda" ? "Cierre de tienda" : `Turno ${selectedDetail.turno || "-"}`}` : "Selecciona un cierre de la lista para ver su contenido."}
         accent="#ff9f1a"
       >
         {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
@@ -2511,9 +2679,9 @@ function ReviewPanel({ token, user, employees = [] }) {
                   {saving && canApprove ? "Guardando..." : "Aprobar"}
                 </button>
               )}
-              {isAdmin ? (
+              {(isAdmin || user?.role === "supervisor") ? (
                 <button className="btn btn-secondary" type="button" onClick={() => setEditMode((value) => !value)} disabled={selectedStatus === "deleted"}>
-                  {editMode ? "Cancelar edicion" : "Editar cierre"}
+                  {editMode ? "Cancelar edicion" : (isAdmin ? "Editar cierre" : "Editar depositos")}
                 </button>
               ) : null}
               {isAdmin && canReconcile ? (
@@ -2535,17 +2703,17 @@ function ReviewPanel({ token, user, employees = [] }) {
 
             <div className="qa-shared-note">
               <TextAreaField
-                label="Resumen QA compartido"
+                label="Notas del cierre"
                 value={summaryNotes}
                 onChange={setSummaryNotes}
-                placeholder={canWriteSharedSummary ? "Resumen visible para supervisor y administrador." : "Usa las notas por sección para dejar seguimiento adicional."}
+                placeholder={canWriteSharedSummary ? "Escribe observaciones generales sobre este cierre." : "Las observaciones se bloquean cuando no hay cambios de estado pendientes."}
                 disabled={!canWriteSharedSummary}
                 readOnly={!canWriteSharedSummary}
               />
               <p>
                 {canWriteSharedSummary
-                  ? "Este resumen acompaña el cierre completo. Las notas finas viven dentro de cada sección o movimiento."
-                  : "Este resumen queda bloqueado cuando ya no hay un cambio de estado pendiente. Para seguimiento adicional, usa las notas por sección o por movimiento."}
+                  ? "Estas observaciones acompañan el cierre completo. Tambien puedes agregar notas dentro de cada seccion."
+                  : "Las observaciones se bloquean cuando no hay cambios pendientes. Puedes seguir usando las notas por seccion."}
               </p>
             </div>
 
@@ -2571,6 +2739,15 @@ function ReviewPanel({ token, user, employees = [] }) {
                   }}
                 />
               )
+            ) : editMode && user?.role === "supervisor" && selectedDetail.tipo !== "tienda" ? (
+              <SupervisorDepositEditor
+                cierre={selectedDetail}
+                token={token}
+                onSaved={async () => {
+                  setEditMode(false);
+                  await refreshCurrent(selectedDetail.id);
+                }}
+              />
             ) : (
               <>
                 <CierreSnapshot
