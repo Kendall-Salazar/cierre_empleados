@@ -272,6 +272,22 @@ def init_db():
             );
             """,
             """
+            CREATE TABLE IF NOT EXISTS cierre_review_notes (
+                id SERIAL PRIMARY KEY,
+                cierre_id INTEGER NOT NULL REFERENCES cierres(id) ON DELETE CASCADE,
+                target_scope TEXT NOT NULL CHECK (target_scope IN ('section', 'item')),
+                section_key TEXT NOT NULL,
+                movement_id TEXT,
+                body TEXT NOT NULL DEFAULT '',
+                created_by_user_id INTEGER NOT NULL REFERENCES users(id),
+                resolved BOOLEAN NOT NULL DEFAULT FALSE,
+                resolved_at TIMESTAMP,
+                resolved_by_user_id INTEGER REFERENCES users(id),
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
             CREATE TABLE IF NOT EXISTS gaspro_rows (
                 id SERIAL PRIMARY KEY,
                 gaspro_import_id INTEGER NOT NULL REFERENCES gaspro_imports(id) ON DELETE CASCADE,
@@ -302,6 +318,14 @@ def init_db():
         ("editable_until", "TIMESTAMP"),
         ("document_reviewed_at", "TIMESTAMP"),
         ("reconciled_at", "TIMESTAMP"),
+        ("reviewed_at", "TIMESTAMP"),
+        ("reviewed_by_user_id", "INTEGER REFERENCES users(id)"),
+        ("approved_at", "TIMESTAMP"),
+        ("approved_by_user_id", "INTEGER REFERENCES users(id)"),
+        ("deleted_at", "TIMESTAMP"),
+        ("deleted_by_user_id", "INTEGER REFERENCES users(id)"),
+        ("delete_reason", "TEXT"),
+        ("status_before_delete", "TEXT"),
         ("audit_notes", "TEXT NOT NULL DEFAULT ''"),
         ("updated_at", "TIMESTAMP NOT NULL DEFAULT NOW()"),
         ("gaspro_summary", "JSONB NOT NULL DEFAULT '{}'::jsonb"),
@@ -342,6 +366,25 @@ def init_db():
         ensure_jsonb_column(cur, "cierres", column, default_sql)
 
     ensure_column(cur, "cierres", "tipo", "TEXT NOT NULL DEFAULT 'pista'")
+
+    cur.execute("UPDATE cierres SET tipo = 'pista' WHERE tipo IS NULL OR trim(tipo) = ''")
+    cur.execute("UPDATE cierres SET status = 'approved' WHERE status IN ('validated', 'approved')")
+    cur.execute("UPDATE cierres SET status = 'reviewed' WHERE status = 'document_reviewed'")
+    cur.execute("UPDATE cierres SET status = 'submitted' WHERE status IN ('observed', 'draft', '') OR status IS NULL")
+    cur.execute("UPDATE cierres SET status = 'reconciled' WHERE reconciled_at IS NOT NULL AND status <> 'deleted'")
+    cur.execute(
+        """
+        UPDATE cierres
+        SET reviewed_at = COALESCE(reviewed_at, document_reviewed_at),
+            approved_at = COALESCE(
+                approved_at,
+                CASE
+                    WHEN status IN ('approved', 'reconciled') THEN COALESCE(document_reviewed_at, updated_at, submitted_at)
+                    ELSE approved_at
+                END
+            )
+        """
+    )
 
     # Expand role constraint to include 'tienda'
     try:

@@ -48,7 +48,14 @@ VOUCHER_AMOUNT_KEYS = [
 MOVEMENT_FIELDS = ("creditos", "mercaderia_credito", "sinpes", "depositos", "vales", "pagos")
 COMPACT_MOVEMENT_FIELDS = {"sinpes", "vales", "pagos"}
 EDITABLE_EMPLOYEE_STATUSES = {"submitted"}
-REVIEWABLE_STATUSES = {"submitted", "validated"}
+STATUS_SUBMITTED = "submitted"
+STATUS_REVIEWED = "reviewed"
+STATUS_APPROVED = "approved"
+STATUS_RECONCILED = "reconciled"
+STATUS_DELETED = "deleted"
+ITEM_NOTE_SECTIONS = {"depositos", "creditos", "mercaderia_credito", "sinpes", "vales", "pagos"}
+PISTA_SECTION_NOTE_KEYS = ITEM_NOTE_SECTIONS | {"vouchers", "mercaderia_contado", "observaciones"}
+TIENDA_SECTION_NOTE_KEYS = {"resumen_ingresos", "detalle", "observaciones"}
 PRODUCT_ALIASES = {
     "s": "super",
     "super": "super",
@@ -167,8 +174,23 @@ class CierreTiendaPayload(BaseModel):
 
 class ReviewPayload(BaseModel):
     validado_json: Dict[str, Any]
-    status: str = "validated"
+    status: str = STATUS_REVIEWED
     audit_notes: Optional[str] = ""
+
+
+class ReviewNotePayload(BaseModel):
+    target_scope: str
+    section_key: str
+    movement_id: Optional[str] = None
+    body: str
+
+
+class ReviewNoteUpdatePayload(BaseModel):
+    resolved: bool
+
+
+class DeleteCierrePayload(BaseModel):
+    reason: Optional[str] = ""
 
 
 class UserCreate(BaseModel):
@@ -193,6 +215,8 @@ class UserUpdate(BaseModel):
 class GasproImportResponse(BaseModel):
     import_id: int
     matched_cierres: int
+    skipped_cierres: int = 0
+    already_reconciled: int = 0
     import_mode: str
 
 
@@ -293,8 +317,28 @@ def pick_first_text(*values: Any) -> str:
     return ""
 
 
+def fallback_movement_id(item: Dict[str, Any], movement_type: str) -> str:
+    canonical = {
+        "tipo": movement_type,
+        "comprobante": pick_first_text(
+            item.get("comprobante"),
+            item.get("referencia"),
+            item.get("descripcion"),
+            item.get("cliente"),
+            item.get("numero"),
+            item.get("detalle"),
+        ),
+        "cliente": str(item.get("cliente", "") or item.get("empresa", "") or "").strip(),
+        "referencia": str(item.get("referencia", "") or item.get("numero", "") or "").strip(),
+        "descripcion": str(item.get("descripcion", "") or item.get("detalle", "") or "").strip(),
+        "monto": str(item.get("monto", item.get("monto_reportado", "")) or "").strip(),
+    }
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(canonical, sort_keys=True, ensure_ascii=True)))
+
+
 def normalize_movement(item: Dict[str, Any], movement_type: str) -> Dict[str, Any]:
     amount_text = str(item.get("monto", item.get("monto_reportado", "")) or "")
+    item_id = item.get("id") or fallback_movement_id(item, movement_type)
     if movement_type in COMPACT_MOVEMENT_FIELDS:
         comprobante = pick_first_text(
             item.get("comprobante"),
@@ -305,15 +349,17 @@ def normalize_movement(item: Dict[str, Any], movement_type: str) -> Dict[str, An
             item.get("detalle"),
         )
         return {
-            "id": item.get("id") or str(uuid.uuid4()),
+            "id": item_id,
             "tipo": movement_type,
             "comprobante": comprobante,
             "monto": amount_text,
             "monto_reportado": amount_text,
             "monto_validado": item.get("monto_validado"),
+            "observacion_empleado": item.get("observacion_empleado", item.get("observacion", "")) or "",
+            "observacion_supervisor": item.get("observacion_supervisor", "") or "",
         }
     return {
-        "id": item.get("id") or str(uuid.uuid4()),
+        "id": item_id,
         "tipo": movement_type,
         "descripcion": item.get("descripcion", "") or item.get("detalle", ""),
         "cliente": item.get("cliente", "") or item.get("empresa", ""),
@@ -592,13 +638,15 @@ def ensure_backdoor_admin_user(db) -> Dict[str, Any]:
 
 
 def normalize_cierre_status(status: Optional[str]) -> str:
-    if status == "observed":
-        return "submitted"
+    if status in (None, "", "draft", "observed"):
+        return STATUS_SUBMITTED
     if status == "document_reviewed":
-        return "validated"
-    if status == "approved":
-        return "validated"
-    return status or "submitted"
+        return STATUS_REVIEWED
+    if status == "validated":
+        return STATUS_APPROVED
+    if status in {STATUS_SUBMITTED, STATUS_REVIEWED, STATUS_APPROVED, STATUS_RECONCILED, STATUS_DELETED}:
+        return status
+    return STATUS_SUBMITTED
 
 
 def fetch_user_by_id(db, user_id: int) -> Optional[dict]:
@@ -648,6 +696,63 @@ def save_audit_log(db, cierre_id: Optional[int], actor_id: int, action: str, det
     )
 
 
+def can_manage_review_notes(user: Dict[str, Any]) -> bool:
+    return user["role"] in {"admin", "supervisor"}
+
+
+def allowed_note_sections(cierre: Dict[str, Any]) -> set[str]:
+    return TIENDA_SECTION_NOTE_KEYS if cierre.get("tipo") == "tienda" else PISTA_SECTION_NOTE_KEYS
+
+
+def movement_exists_for_review_note(cierre: Dict[str, Any], section_key: str, movement_id: str) -> bool:
+    payload = cierre.get("reportado_json") or {}
+    items = payload.get(section_key) or []
+    return any(str(item.get("id") or "").strip() == movement_id for item in items if isinstance(item, dict))
+
+
+def list_review_notes(db, cierre_id: int) -> List[Dict[str, Any]]:
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT n.*,
+               author.full_name AS author_name,
+               author.role AS author_role,
+               resolver.full_name AS resolved_by_name,
+               resolver.role AS resolved_by_role
+        FROM cierre_review_notes n
+        JOIN users author ON author.id = n.created_by_user_id
+        LEFT JOIN users resolver ON resolver.id = n.resolved_by_user_id
+        WHERE n.cierre_id = %s
+        ORDER BY n.resolved ASC, n.created_at DESC, n.id DESC
+        """,
+        (cierre_id,),
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def attach_review_note_counts(db, cierres: List[Dict[str, Any]]) -> None:
+    ids = [c["id"] for c in cierres if c.get("id")]
+    if not ids:
+        return
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT cierre_id,
+               COUNT(*) AS total_notes,
+               COUNT(*) FILTER (WHERE resolved = FALSE) AS unresolved_notes
+        FROM cierre_review_notes
+        WHERE cierre_id = ANY(%s)
+        GROUP BY cierre_id
+        """,
+        (ids,),
+    )
+    counts = {row["cierre_id"]: dict(row) for row in cur.fetchall()}
+    for cierre in cierres:
+        current = counts.get(cierre["id"], {})
+        cierre["note_count"] = int(current.get("total_notes") or 0)
+        cierre["unresolved_note_count"] = int(current.get("unresolved_notes") or 0)
+
+
 def hydrate_cierre(row: Dict[str, Any]) -> Dict[str, Any]:
     cierre = dict(row)
     reportado = parse_json_field(cierre.get("reportado_json"), {})
@@ -673,7 +778,7 @@ def can_employee_edit(cierre: Dict[str, Any], user: Dict[str, Any]) -> bool:
         return False
     if cierre.get("status") not in EDITABLE_EMPLOYEE_STATUSES:
         return False
-    if cierre.get("document_reviewed_at") or cierre.get("reconciled_at"):
+    if cierre.get("reviewed_at") or cierre.get("approved_at") or cierre.get("reconciled_at") or cierre.get("deleted_at"):
         return False
     editable_until = cierre.get("editable_until")
     if not editable_until:
@@ -691,6 +796,8 @@ def assert_can_view_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
 
 
 def assert_can_edit_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
+    if normalize_cierre_status(cierre.get("status")) == STATUS_DELETED:
+        raise HTTPException(status_code=403, detail="Restaura este cierre antes de editarlo")
     if user["role"] == "admin":
         return
     if user["role"] == "tienda":
@@ -698,12 +805,6 @@ def assert_can_edit_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
             raise HTTPException(status_code=403, detail="No podés editar este cierre")
         if cierre.get("tipo") != "tienda":
             raise HTTPException(status_code=403, detail="No autorizado")
-        editable_until = cierre.get("editable_until")
-        if editable_until:
-            if isinstance(editable_until, str):
-                editable_until = datetime.fromisoformat(editable_until)
-            if utcnow() > editable_until:
-                raise HTTPException(status_code=403, detail="El cierre ya no puede ser modificado")
         return
     if user["role"] == "supervisor":
         raise HTTPException(status_code=403, detail="Solo un administrador puede editar cierres directamente")
@@ -712,23 +813,30 @@ def assert_can_edit_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
 
 
 def assert_can_review_transition(cierre: Dict[str, Any], user: Dict[str, Any], next_status: str):
-    if next_status not in REVIEWABLE_STATUSES:
-        raise HTTPException(status_code=400, detail="Estado de revision invalido")
-
     current_status = normalize_cierre_status(cierre.get("status"))
+    if current_status == STATUS_DELETED:
+        raise HTTPException(status_code=403, detail="No podes revisar un cierre en papelera")
     if user["role"] == "admin":
+        if next_status != STATUS_APPROVED:
+            raise HTTPException(status_code=400, detail="El administrador solo puede aprobar cierres")
+        if current_status not in {STATUS_REVIEWED, STATUS_APPROVED}:
+            raise HTTPException(status_code=400, detail="Solo se puede aprobar un cierre revisado")
         return
     if user["role"] != "supervisor":
         raise HTTPException(status_code=403, detail="No autorizado")
-    if current_status == "reconciled":
-        raise HTTPException(status_code=403, detail="Un supervisor no puede modificar un cierre conciliado")
+    if next_status != STATUS_REVIEWED:
+        raise HTTPException(status_code=400, detail="El supervisor solo puede marcar cierres como revisados")
+    if current_status not in {STATUS_SUBMITTED, STATUS_REVIEWED}:
+        raise HTTPException(status_code=400, detail="Solo se puede revisar un cierre enviado")
 
 
 def assert_can_reconcile_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Solo un administrador puede conciliar cierres")
-    if normalize_cierre_status(cierre.get("status")) != "validated":
-        raise HTTPException(status_code=400, detail="Solo se puede conciliar un cierre validado")
+    if cierre.get("tipo") == "tienda":
+        raise HTTPException(status_code=400, detail="Los cierres de tienda no se concilian con Gaspro")
+    if normalize_cierre_status(cierre.get("status")) != STATUS_APPROVED:
+        raise HTTPException(status_code=400, detail="Solo se puede conciliar un cierre aprobado")
 
 
 def get_cierre_or_404(db, cierre_id: int) -> Dict[str, Any]:
@@ -740,7 +848,16 @@ def get_cierre_or_404(db, cierre_id: int) -> Dict[str, Any]:
     return hydrate_cierre(row)
 
 
-def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[str, Any], current_user: Dict[str, Any], cierre_id: Optional[int] = None, employee_id: Optional[int] = None, status: str = "submitted") -> int:
+def persist_cierre_payload(
+    db,
+    payload: Dict[str, Any],
+    validado_payload: Dict[str, Any],
+    current_user: Dict[str, Any],
+    cierre_id: Optional[int] = None,
+    employee_id: Optional[int] = None,
+    status: str = STATUS_SUBMITTED,
+    reset_reconciliation: bool = False,
+) -> int:
     reportado_payload = normalize_payload(payload)
     validado_payload = normalize_payload(validado_payload or payload)
     resumen_reportado = compute_summary(reportado_payload, validated=False)
@@ -750,7 +867,7 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
     employee = fetch_user_by_id(db, employee_id)
     if not employee:
         raise HTTPException(status_code=400, detail="Empleado inválido")
-    editable_until = utcnow() if status in {"validated", "reconciled"} else utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS)
+    editable_until = utcnow() if status in {STATUS_REVIEWED, STATUS_APPROVED, STATUS_RECONCILED} else utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS)
     cur = db.cursor()
     v = reportado_payload["vouchers"]
     creditos_text = json.dumps(export_movement_rows(reportado_payload["creditos"]))
@@ -802,6 +919,9 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
                 resumen_validado = %s::jsonb,
                 edited_by_user_id = %s,
                 editable_until = %s,
+                gaspro_summary = CASE WHEN %s THEN '{}'::jsonb ELSE gaspro_summary END,
+                gaspro_mode = CASE WHEN %s THEN NULL ELSE gaspro_mode END,
+                reconciled_at = CASE WHEN %s THEN NULL ELSE reconciled_at END,
                 updated_at = %s,
                 voucher_bcr = %s,
                 voucher_bac = %s,
@@ -822,7 +942,7 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
             (
                 reportado_payload["fecha"], employee["full_name"], employee["id"], reportado_payload["turno"], reportado_payload["datafono"], reportado_payload["observaciones"],
                 status, json.dumps(reportado_payload), json.dumps(validado_payload), json.dumps(resumen_reportado), json.dumps(resumen_validado),
-                current_user["id"], editable_until, utcnow(),
+                current_user["id"], editable_until, reset_reconciliation, reset_reconciliation, reset_reconciliation, utcnow(),
                 decimal_to_float(v.get("bcr_monto")), decimal_to_float(v.get("bac_monto")), decimal_to_float(v.get("bac_flotas_monto")), decimal_to_float(v.get("versatec_monto")),
                 decimal_to_float(v.get("fleet_bncr_monto")), decimal_to_float(v.get("fleet_dav_monto")), 0,
                 creditos_text, sinpes_text, 0, vales_text, pagos_text, 0, resumen_reportado["total_reportado"], cierre_id,
@@ -833,11 +953,17 @@ def persist_cierre_payload(db, payload: Dict[str, Any], validado_payload: Dict[s
     return cierre_id
 
 
-def persist_cierre_tienda(db, payload: Dict[str, Any], current_user: Dict[str, Any], cierre_id: Optional[int] = None) -> int:
+def persist_cierre_tienda(
+    db,
+    payload: Dict[str, Any],
+    current_user: Dict[str, Any],
+    cierre_id: Optional[int] = None,
+    status: str = STATUS_SUBMITTED,
+) -> int:
     reportado = normalize_tienda_payload(payload)
     resumen = compute_tienda_summary(reportado)
-    status = "submitted"
-    editable_until = utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS)
+    status = normalize_cierre_status(status)
+    editable_until = None
     cur = db.cursor()
     if cierre_id is None:
         cur.execute(
@@ -870,14 +996,14 @@ def persist_cierre_tienda(db, payload: Dict[str, Any], current_user: Dict[str, A
         cur.execute(
             """
             UPDATE cierres
-            SET fecha = %s, observaciones = %s, reportado_json = %s::jsonb, validado_json = %s::jsonb,
+            SET fecha = %s, observaciones = %s, status = %s, reportado_json = %s::jsonb, validado_json = %s::jsonb,
                 resumen_reportado = %s::jsonb, resumen_validado = %s::jsonb,
                 edited_by_user_id = %s, editable_until = %s, updated_at = %s,
                 total_reportado = %s
             WHERE id = %s
             """,
             (
-                reportado["fecha"], reportado.get("observaciones", ""),
+                reportado["fecha"], reportado.get("observaciones", ""), status,
                 json.dumps(reportado), json.dumps(reportado), json.dumps(resumen), json.dumps(resumen),
                 current_user["id"], editable_until, utcnow(),
                 resumen["total_reportado"], cierre_id,
@@ -997,6 +1123,42 @@ def summarize_gaspro_rows(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     return by_employee
 
 
+def find_latest_gaspro_match_for_cierre(db, cierre: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    target_date = cierre["fecha"].isoformat() if isinstance(cierre["fecha"], date) else str(cierre["fecha"])
+    target_employee = normalize_text(cierre.get("empleado"))
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT gr.*, gi.created_at AS import_created_at
+        FROM gaspro_rows gr
+        JOIN gaspro_imports gi ON gi.id = gr.gaspro_import_id
+        WHERE gr.fecha = %s
+        ORDER BY gi.created_at DESC, gr.gaspro_import_id DESC, gr.id ASC
+        """,
+        (target_date,),
+    )
+    grouped: Dict[int, List[Dict[str, Any]]] = {}
+    for row in cur.fetchall():
+        grouped.setdefault(row["gaspro_import_id"], []).append(
+            {
+                "fecha": row["fecha"] if isinstance(row["fecha"], date) else parse_date_value(row["fecha"]),
+                "empleado": row["empleado"],
+                "turno": row["turno"],
+                "producto": row["producto"],
+                "litros": decimal_to_float(row["litros"]),
+                "monto": decimal_to_float(row["monto"]),
+                "ppu": decimal_to_float(row["ppu"]),
+                "raw_row": parse_json_field(row.get("raw_row"), {}),
+            }
+        )
+
+    for import_id, rows in grouped.items():
+        summary = summarize_gaspro_rows(rows).get(target_date, {}).get(target_employee)
+        if summary:
+            return {"import_id": import_id, "summary": summary}
+    return None
+
+
 def apply_gaspro_to_cierre(db, cierre: Dict[str, Any], summary: Dict[str, Any], import_id: int, actor: Dict[str, Any]):
     assert_can_reconcile_cierre(cierre, actor)
     mode = "price_change" if summary.get("price_change") else "normal"
@@ -1010,10 +1172,11 @@ def apply_gaspro_to_cierre(db, cierre: Dict[str, Any], summary: Dict[str, Any], 
             reconciled_at = %s,
             editable_until = %s,
             status = %s,
+            edited_by_user_id = %s,
             updated_at = %s
         WHERE id = %s
         """,
-        (json.dumps(summary), import_id, mode, utcnow(), utcnow(), "reconciled", utcnow(), cierre["id"]),
+        (json.dumps(summary), import_id, mode, utcnow(), utcnow(), STATUS_RECONCILED, actor["id"], utcnow(), cierre["id"]),
     )
     save_audit_log(db, cierre["id"], actor["id"], "gaspro_reconciled", {"import_id": import_id, "mode": mode})
 
@@ -1270,11 +1433,14 @@ def delete_user(user_id: int, user=Depends(require_roles("admin")), db=Depends(g
 def create_cierre(payload: CierrePayload, user=Depends(get_current_user), db=Depends(get_db)):
     employee_id = payload.employee_id if user["role"] in {"admin", "supervisor"} and payload.employee_id else user["id"]
     cur = db.cursor()
-    cur.execute("SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s", (employee_id, payload.fecha))
+    cur.execute(
+        "SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s AND COALESCE(status, '') <> %s",
+        (employee_id, payload.fecha, STATUS_DELETED),
+    )
     if cur.fetchone()[0] >= 3:
         raise HTTPException(status_code=409, detail="Ya existen 3 cierres para este empleado en esta fecha.")
     try:
-        cierre_id = persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, employee_id=employee_id, status="submitted")
+        cierre_id = persist_cierre_payload(db, payload.model_dump(), payload.model_dump(), user, employee_id=employee_id, status=STATUS_SUBMITTED)
     except HTTPException:
         raise
     except Exception as exc:
@@ -1286,7 +1452,10 @@ def create_cierre(payload: CierrePayload, user=Depends(get_current_user), db=Dep
 @app.get("/api/cierres/count")
 def count_cierres_for_date(fecha: str, user=Depends(get_current_user), db=Depends(get_db)):
     cur = db.cursor()
-    cur.execute("SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s", (user["id"], fecha))
+    cur.execute(
+        "SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s AND COALESCE(status, '') <> %s",
+        (user["id"], fecha, STATUS_DELETED),
+    )
     return {"count": cur.fetchone()[0], "max": 3}
 
 
@@ -1295,11 +1464,14 @@ def create_cierre_tienda(payload: CierreTiendaPayload, user=Depends(get_current_
     if user["role"] not in {"tienda", "admin"}:
         raise HTTPException(status_code=403, detail="No autorizado")
     cur = db.cursor()
-    cur.execute("SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s AND tipo = 'tienda'", (user["id"], payload.fecha))
+    cur.execute(
+        "SELECT COUNT(*) FROM cierres WHERE employee_id = %s AND fecha = %s AND tipo = 'tienda' AND COALESCE(status, '') <> %s",
+        (user["id"], payload.fecha, STATUS_DELETED),
+    )
     if cur.fetchone()[0] >= 1:
         raise HTTPException(status_code=409, detail="Ya existe un cierre de tienda para esta fecha.")
     try:
-        cierre_id = persist_cierre_tienda(db, payload.model_dump(), user)
+        cierre_id = persist_cierre_tienda(db, payload.model_dump(), user, status=STATUS_SUBMITTED)
     except HTTPException:
         raise
     except Exception as exc:
@@ -1315,7 +1487,7 @@ def update_cierre_tienda(cierre_id: int, payload: CierreTiendaPayload, user=Depe
         raise HTTPException(status_code=400, detail="Este cierre no es de tienda")
     assert_can_edit_cierre(cierre, user)
     try:
-        persist_cierre_tienda(db, payload.model_dump(), user, cierre_id=cierre_id)
+        persist_cierre_tienda(db, payload.model_dump(), user, cierre_id=cierre_id, status=normalize_cierre_status(cierre.get("status")))
     except HTTPException:
         raise
     except Exception as exc:
@@ -1329,6 +1501,7 @@ def list_cierres(
     fecha: Optional[str] = None,
     employee_id: Optional[int] = None,
     status: Optional[str] = None,
+    include_deleted: bool = False,
     user=Depends(get_current_user),
     db=Depends(get_db),
 ):
@@ -1350,9 +1523,14 @@ def list_cierres(
     query += " ORDER BY fecha DESC, id DESC"
     cur.execute(query, params)
     cierres = [hydrate_cierre(row) for row in cur.fetchall()]
+    normalized_status = normalize_cierre_status(status) if status else None
+    should_include_deleted = include_deleted or normalized_status == STATUS_DELETED
+    if not should_include_deleted:
+        cierres = [cierre for cierre in cierres if cierre.get("status") != STATUS_DELETED]
     if status:
-        normalized_status = normalize_cierre_status(status)
         cierres = [cierre for cierre in cierres if cierre.get("status") == normalized_status]
+    if can_manage_review_notes(user):
+        attach_review_note_counts(db, cierres)
     return cierres
 
 
@@ -1360,6 +1538,8 @@ def list_cierres(
 def get_cierre(cierre_id: int, user=Depends(get_current_user), db=Depends(get_db)):
     cierre = get_cierre_or_404(db, cierre_id)
     assert_can_view_cierre(cierre, user)
+    if can_manage_review_notes(user):
+        cierre["review_notes"] = list_review_notes(db, cierre_id)
     return cierre
 
 
@@ -1368,6 +1548,11 @@ def update_cierre(cierre_id: int, payload: CierrePayload, user=Depends(get_curre
     cierre = get_cierre_or_404(db, cierre_id)
     assert_can_edit_cierre(cierre, user)
     employee_id = payload.employee_id if user["role"] in {"admin", "supervisor"} and payload.employee_id else cierre.get("employee_id")
+    next_status = normalize_cierre_status(cierre.get("status"))
+    reset_reconciliation = False
+    if user["role"] == "admin" and next_status == STATUS_RECONCILED:
+        next_status = STATUS_APPROVED
+        reset_reconciliation = True
     try:
         persist_cierre_payload(
             db,
@@ -1376,25 +1561,43 @@ def update_cierre(cierre_id: int, payload: CierrePayload, user=Depends(get_curre
             user,
             cierre_id=cierre_id,
             employee_id=employee_id,
-            status=normalize_cierre_status(cierre.get("status")),
+            status=next_status,
+            reset_reconciliation=reset_reconciliation,
         )
     except HTTPException:
         raise
     except Exception as exc:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error al actualizar el cierre: {str(exc)}") from exc
+    if reset_reconciliation:
+        save_audit_log(db, cierre_id, user["id"], "reconciliation_reset", {"next_status": next_status})
+        db.commit()
     return {"ok": True, "id": cierre_id}
 
 
 @app.post("/api/cierres/{cierre_id}/review")
 def review_cierre(cierre_id: int, payload: ReviewPayload, user=Depends(require_roles("admin", "supervisor")), db=Depends(get_db)):
     cierre = get_cierre_or_404(db, cierre_id)
-    validado_payload = normalize_payload(payload.validado_json)
-    resumen_validado = compute_summary(validado_payload, validated=True)
+    if cierre.get("tipo") == "tienda":
+        validado_payload = normalize_tienda_payload(payload.validado_json)
+        resumen_validado = compute_tienda_summary(validado_payload)
+    else:
+        validado_payload = normalize_payload(payload.validado_json)
+        resumen_validado = compute_summary(validado_payload, validated=True)
     next_status = normalize_cierre_status(payload.status)
     assert_can_review_transition(cierre, user, next_status)
-    reviewed_at = utcnow() if next_status == "validated" else None
-    editable_until = utcnow() + timedelta(hours=EMPLOYEE_EDIT_HOURS) if next_status == "submitted" else utcnow()
+    reviewed_at = cierre.get("reviewed_at")
+    reviewed_by_user_id = cierre.get("reviewed_by_user_id")
+    approved_at = cierre.get("approved_at")
+    approved_by_user_id = cierre.get("approved_by_user_id")
+    now = utcnow()
+    if next_status == STATUS_REVIEWED:
+        reviewed_at = now
+        reviewed_by_user_id = user["id"]
+    if next_status == STATUS_APPROVED:
+        approved_at = now
+        approved_by_user_id = user["id"]
+    editable_until = None if cierre.get("tipo") == "tienda" else now
     cur = db.cursor()
     cur.execute(
         """
@@ -1404,7 +1607,10 @@ def review_cierre(cierre_id: int, payload: ReviewPayload, user=Depends(require_r
             status = %s,
             audit_notes = %s,
             document_reviewed_at = %s,
-            reconciled_at = NULL,
+            reviewed_at = %s,
+            reviewed_by_user_id = %s,
+            approved_at = %s,
+            approved_by_user_id = %s,
             editable_until = %s,
             edited_by_user_id = %s,
             updated_at = NOW()
@@ -1416,12 +1622,16 @@ def review_cierre(cierre_id: int, payload: ReviewPayload, user=Depends(require_r
             next_status,
             payload.audit_notes or "",
             reviewed_at,
+            reviewed_at,
+            reviewed_by_user_id,
+            approved_at,
+            approved_by_user_id,
             editable_until,
             user["id"],
             cierre_id,
         ),
     )
-    save_audit_log(db, cierre_id, user["id"], "document_reviewed", {"status": next_status, "notes": payload.audit_notes or ""})
+    save_audit_log(db, cierre_id, user["id"], next_status, {"status": next_status, "notes": payload.audit_notes or ""})
     db.commit()
     return {"ok": True}
 
@@ -1430,22 +1640,149 @@ def review_cierre(cierre_id: int, payload: ReviewPayload, user=Depends(require_r
 def reconcile_cierre(cierre_id: int, user=Depends(require_roles("admin")), db=Depends(get_db)):
     cierre = get_cierre_or_404(db, cierre_id)
     assert_can_reconcile_cierre(cierre, user)
+    match = find_latest_gaspro_match_for_cierre(db, cierre)
+    if not match:
+        raise HTTPException(status_code=409, detail="No hay datos de Gaspro para volver a conciliar este cierre")
+    apply_gaspro_to_cierre(db, cierre, match["summary"], match["import_id"], user)
+    save_audit_log(db, cierre_id, user["id"], "reconciled", {"source": "latest_gaspro", "import_id": match["import_id"]})
+    db.commit()
+    return {"ok": True, "import_id": match["import_id"]}
+
+
+@app.post("/api/cierres/{cierre_id}/notes")
+def create_review_note(cierre_id: int, payload: ReviewNotePayload, user=Depends(require_roles("admin", "supervisor")), db=Depends(get_db)):
+    cierre = get_cierre_or_404(db, cierre_id)
+    assert_can_view_cierre(cierre, user)
+    if normalize_cierre_status(cierre.get("status")) == STATUS_DELETED:
+        raise HTTPException(status_code=400, detail="No se pueden agregar notas a un cierre en papelera")
+
+    target_scope = (payload.target_scope or "").strip().lower()
+    section_key = (payload.section_key or "").strip()
+    body = (payload.body or "").strip()
+    movement_id = (payload.movement_id or "").strip() or None
+
+    if target_scope not in {"section", "item"}:
+        raise HTTPException(status_code=422, detail="Tipo de nota inválido")
+    if not section_key:
+        raise HTTPException(status_code=422, detail="La sección es obligatoria")
+    if not body:
+        raise HTTPException(status_code=422, detail="La nota no puede quedar vacía")
+    if section_key not in allowed_note_sections(cierre):
+        raise HTTPException(status_code=422, detail="Esta sección no admite notas QA")
+    if target_scope == "item":
+        if cierre.get("tipo") == "tienda":
+            raise HTTPException(status_code=422, detail="Los cierres de tienda solo admiten notas por sección")
+        if section_key not in ITEM_NOTE_SECTIONS:
+            raise HTTPException(status_code=422, detail="Esta sección no admite notas por movimiento")
+        if not movement_id:
+            raise HTTPException(status_code=422, detail="El movimiento es obligatorio para una nota por ítem")
+        if not movement_exists_for_review_note(cierre, section_key, movement_id):
+            raise HTTPException(status_code=422, detail="El movimiento indicado ya no existe en este cierre")
+    else:
+        movement_id = None
+
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        INSERT INTO cierre_review_notes (
+            cierre_id, target_scope, section_key, movement_id, body, created_by_user_id
+        ) VALUES (%s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (cierre_id, target_scope, section_key, movement_id, body, user["id"]),
+    )
+    note_id = cur.fetchone()["id"]
+    save_audit_log(db, cierre_id, user["id"], "review_note_created", {"note_id": note_id, "section_key": section_key, "movement_id": movement_id})
+    db.commit()
+    note = next((item for item in list_review_notes(db, cierre_id) if item["id"] == note_id), None)
+    return note or {"id": note_id}
+
+
+@app.patch("/api/cierres/{cierre_id}/notes/{note_id}")
+def update_review_note(cierre_id: int, note_id: int, payload: ReviewNoteUpdatePayload, user=Depends(require_roles("admin", "supervisor")), db=Depends(get_db)):
+    cierre = get_cierre_or_404(db, cierre_id)
+    assert_can_view_cierre(cierre, user)
+    if normalize_cierre_status(cierre.get("status")) == STATUS_DELETED:
+        raise HTTPException(status_code=400, detail="Restaura este cierre antes de resolver notas")
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM cierre_review_notes WHERE id = %s AND cierre_id = %s", (note_id, cierre_id))
+    note = cur.fetchone()
+    if not note:
+        raise HTTPException(status_code=404, detail="Nota no encontrada")
+
+    resolved = bool(payload.resolved)
+    resolved_at = utcnow() if resolved else None
+    resolved_by_user_id = user["id"] if resolved else None
+    cur.execute(
+        """
+        UPDATE cierre_review_notes
+        SET resolved = %s,
+            resolved_at = %s,
+            resolved_by_user_id = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (resolved, resolved_at, resolved_by_user_id, note_id),
+    )
+    save_audit_log(db, cierre_id, user["id"], "review_note_updated", {"note_id": note_id, "resolved": resolved})
+    db.commit()
+    updated = next((item for item in list_review_notes(db, cierre_id) if item["id"] == note_id), None)
+    return updated or {"id": note_id, "resolved": resolved}
+
+
+@app.delete("/api/cierres/{cierre_id}")
+def delete_cierre(cierre_id: int, payload: DeleteCierrePayload, user=Depends(require_roles("admin")), db=Depends(get_db)):
+    cierre = get_cierre_or_404(db, cierre_id)
+    current_status = normalize_cierre_status(cierre.get("status"))
+    if current_status == STATUS_DELETED:
+        return {"ok": True, "id": cierre_id}
     cur = db.cursor()
     cur.execute(
         """
         UPDATE cierres
-        SET status = 'reconciled',
-            reconciled_at = NOW(),
-            editable_until = NOW(),
+        SET status = %s,
+            status_before_delete = %s,
+            deleted_at = %s,
+            deleted_by_user_id = %s,
+            delete_reason = %s,
             edited_by_user_id = %s,
             updated_at = NOW()
         WHERE id = %s
         """,
-        (user["id"], cierre_id),
+        (STATUS_DELETED, current_status, utcnow(), user["id"], (payload.reason or "").strip(), user["id"], cierre_id),
     )
-    save_audit_log(db, cierre_id, user["id"], "reconciled", {"source": "manual"})
+    save_audit_log(db, cierre_id, user["id"], "deleted", {"reason": (payload.reason or "").strip(), "previous_status": current_status})
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "id": cierre_id}
+
+
+@app.post("/api/cierres/{cierre_id}/restore")
+def restore_cierre(cierre_id: int, user=Depends(require_roles("admin")), db=Depends(get_db)):
+    cierre = get_cierre_or_404(db, cierre_id)
+    current_status = normalize_cierre_status(cierre.get("status"))
+    if current_status != STATUS_DELETED:
+        raise HTTPException(status_code=400, detail="Este cierre no está en papelera")
+    restore_status = normalize_cierre_status(cierre.get("status_before_delete")) or STATUS_SUBMITTED
+    if restore_status == STATUS_DELETED:
+        restore_status = STATUS_SUBMITTED
+    cur = db.cursor()
+    cur.execute(
+        """
+        UPDATE cierres
+        SET status = %s,
+            deleted_at = NULL,
+            deleted_by_user_id = NULL,
+            delete_reason = '',
+            status_before_delete = NULL,
+            edited_by_user_id = %s,
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (restore_status, user["id"], cierre_id),
+    )
+    save_audit_log(db, cierre_id, user["id"], "restored", {"restored_status": restore_status})
+    db.commit()
+    return {"ok": True, "id": cierre_id, "status": restore_status}
 
 
 @app.post("/api/cierres/{cierre_id}/attachments")
@@ -1515,19 +1852,37 @@ def import_gaspro(
             (import_id, row["fecha"], row["empleado"], row["turno"], row["producto"], row["litros"], row["monto"], row["ppu"], json.dumps(row["raw_row"])),
         )
     matched = 0
+    skipped = 0
+    already_reconciled = 0
     cur_dict = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
     cur_dict.execute("SELECT * FROM cierres WHERE fecha BETWEEN %s AND %s", (date_from, date_to))
     for cierre in [hydrate_cierre(row) for row in cur_dict.fetchall()]:
+        if cierre.get("tipo") == "tienda" or cierre.get("status") == STATUS_DELETED:
+            continue
         date_key = cierre["fecha"].isoformat() if isinstance(cierre["fecha"], date) else str(cierre["fecha"])
         employee_key = normalize_text(cierre.get("empleado"))
         summary = summary_by_date.get(date_key, {}).get(employee_key)
         if not summary:
+            skipped += 1
+            continue
+        current_status = normalize_cierre_status(cierre.get("status"))
+        if current_status == STATUS_RECONCILED:
+            already_reconciled += 1
+            continue
+        if current_status != STATUS_APPROVED:
+            skipped += 1
             continue
         apply_gaspro_to_cierre(db, cierre, summary, import_id, user)
         matched += 1
     cur.execute("UPDATE gaspro_imports SET matched_cierres = %s, reconciled_at = NOW() WHERE id = %s", (matched, import_id))
     db.commit()
-    return GasproImportResponse(import_id=import_id, matched_cierres=matched, import_mode=import_mode)
+    return GasproImportResponse(
+        import_id=import_id,
+        matched_cierres=matched,
+        skipped_cierres=skipped,
+        already_reconciled=already_reconciled,
+        import_mode=import_mode,
+    )
 
 
 @app.get("/api/gaspro/imports")

@@ -92,21 +92,33 @@ const ROLE_LABELS = {
   tienda: "Tienda",
 };
 
-const REVIEW_STATUS_OPTIONS = [
-  { value: "submitted", label: "Devuelto con nota" },
-  { value: "validated", label: "Validado" },
-];
+const ITEM_NOTE_SECTION_KEYS = new Set(["depositos", "creditos", "mercaderia_credito", "sinpes", "vales", "pagos"]);
+const SECTION_LABELS = {
+  depositos: "Depositos",
+  creditos: "Creditos",
+  mercaderia_credito: "Mercaderia a credito",
+  sinpes: "SINPE movil",
+  vales: "Vales",
+  pagos: "Pagos",
+  vouchers: "Vouchers",
+  mercaderia_contado: "Mercaderia de contado",
+  observaciones: "Observaciones",
+  resumen_ingresos: "Resumen de ingresos",
+  detalle: "Detalle",
+};
 
 const STATUS_META = {
   submitted: { label: "Enviado", tone: "amber" },
-  validated: { label: "Validado", tone: "teal" },
-  reconciled: { label: "Conciliado", tone: "indigo" },
+  reviewed: { label: "Revisado", tone: "navy" },
+  approved: { label: "Aprobado", tone: "emerald" },
+  reconciled: { label: "Conciliado", tone: "indigo", strong: true },
+  deleted: { label: "En papelera", tone: "rose" },
 };
 
 function normalizeStatusValue(status) {
   if (status === "observed") return "submitted";
-  if (status === "document_reviewed") return "validated";
-  if (status === "approved") return "validated";
+  if (status === "document_reviewed") return "reviewed";
+  if (status === "validated") return "approved";
   return status || "submitted";
 }
 
@@ -245,6 +257,30 @@ function formatDateTimeLabel(value) {
   }).format(date);
 }
 
+function sectionLabel(sectionKey) {
+  return SECTION_LABELS[sectionKey] || sectionKey || "Seccion";
+}
+
+function filterReviewNotes(reviewNotes = [], sectionKey, movementId = null) {
+  return (reviewNotes || []).filter((note) => {
+    if (note.section_key !== sectionKey) return false;
+    if (movementId) return note.target_scope === "item" && note.movement_id === movementId;
+    return note.target_scope === "section";
+  });
+}
+
+function sumMovementItems(items = []) {
+  return (items || []).reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0);
+}
+
+function normalizeTiendaSummary(summary = {}) {
+  return {
+    totalResumen: parseAmount(summary.totalResumen ?? summary.total_resumen),
+    totalDetalle: parseAmount(summary.totalDetalle ?? summary.total_detalle),
+    diferencia: parseAmount(summary.diferencia),
+  };
+}
+
 function isValidDateValue(value) {
   if (!value) return false;
   const date = new Date(`${value}T00:00:00`);
@@ -253,7 +289,7 @@ function isValidDateValue(value) {
 
 function canEditCierre(cierre) {
   if (!EDITABLE_STATUSES.includes(normalizeStatusValue(cierre?.status))) return false;
-  if (cierre?.document_reviewed_at || cierre?.reconciled_at) return false;
+  if (cierre?.reviewed_at || cierre?.approved_at || cierre?.reconciled_at || cierre?.deleted_at) return false;
   if (!cierre?.editable_until) return false;
 
   const editableUntil = new Date(cierre.editable_until);
@@ -445,7 +481,7 @@ function Banner({ tone = "success", children }) {
 function StatusPill({ status }) {
   const normalizedStatus = normalizeStatusValue(status);
   const meta = STATUS_META[normalizedStatus] || { label: normalizedStatus || "Sin estado", tone: "slate" };
-  return <span className={cx("status-pill", `tone-${meta.tone}`)}>{meta.label}</span>;
+  return <span className={cx("status-pill", `tone-${meta.tone}`, meta.strong && "status-pill-strong")}>{meta.label}</span>;
 }
 
 function ThemeToggle({ isDark, onToggle, floating = false }) {
@@ -609,7 +645,7 @@ function SelectField({ label, hint, value, onChange, children }) {
   );
 }
 
-function TextAreaField({ label, hint, value, onChange, placeholder = "" }) {
+function TextAreaField({ label, hint, value, onChange, placeholder = "", disabled = false, readOnly = false }) {
   return (
     <FieldShell label={label} hint={hint}>
       <textarea
@@ -617,6 +653,8 @@ function TextAreaField({ label, hint, value, onChange, placeholder = "" }) {
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
+        disabled={disabled}
+        readOnly={readOnly}
       />
     </FieldShell>
   );
@@ -1043,6 +1081,414 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
   );
 }
 
+function ReviewNotesThread({ label, notes = [], onCreate, onToggleResolved }) {
+  const [open, setOpen] = useState(() => notes.some((note) => !note.resolved));
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [showResolved, setShowResolved] = useState(false);
+
+  useEffect(() => {
+    if (notes.some((note) => !note.resolved)) {
+      setOpen(true);
+    }
+  }, [notes]);
+
+  const unresolved = notes.filter((note) => !note.resolved);
+  const resolved = notes.filter((note) => note.resolved);
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body || !onCreate) return;
+    setSubmitting(true);
+    try {
+      await onCreate(body);
+      setDraft("");
+      setOpen(true);
+    } catch {
+      // The parent already surfaces the error banner.
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="qa-thread">
+      <button className="qa-thread-toggle" type="button" onClick={() => setOpen((value) => !value)}>
+        <span>{label}</span>
+        <strong>{notes.length}</strong>
+      </button>
+
+      {open ? (
+        <div className="qa-thread-body">
+          {onCreate ? (
+            <div className="qa-note-composer">
+              <textarea
+                className="field-input field-textarea qa-note-textarea"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder="Escribe una nota breve, clara y accionable."
+              />
+              <div className="qa-note-actions">
+                <button className="btn btn-secondary btn-sm" type="button" onClick={submit} disabled={submitting || !draft.trim()}>
+                  {submitting ? "Guardando..." : "Agregar nota"}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {unresolved.length > 0 ? (
+            <div className="qa-note-list">
+              {unresolved.map((note) => (
+                <div className="qa-note-card" key={note.id}>
+                  <div className="qa-note-head">
+                    <div>
+                      <strong>{note.author_name}</strong>
+                      <span>{ROLE_LABELS[note.author_role] || note.author_role} / {formatDateTimeLabel(note.created_at)}</span>
+                    </div>
+                    <div className="qa-note-head-actions">
+                      <span className="qa-note-status">Pendiente</span>
+                      {onToggleResolved ? (
+                        <button className="qa-note-toggle" type="button" onClick={() => onToggleResolved(note, true)}>
+                          <span className="qa-check-icon" />
+                          Resolver
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                  <p>{note.body}</p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="qa-note-empty">Sin notas pendientes.</div>
+          )}
+
+          {resolved.length > 0 ? (
+            <div className="qa-note-resolved">
+              <button className="btn btn-ghost btn-sm" type="button" onClick={() => setShowResolved((value) => !value)}>
+                {showResolved ? "Ocultar resueltas" : `Ver resueltas (${resolved.length})`}
+              </button>
+              {showResolved ? (
+                <div className="qa-note-list qa-note-list-resolved">
+                  {resolved.map((note) => (
+                    <div className="qa-note-card qa-note-card-resolved" key={note.id}>
+                      <div className="qa-note-head">
+                        <div>
+                          <strong>{note.author_name}</strong>
+                          <span>{ROLE_LABELS[note.author_role] || note.author_role} / {formatDateTimeLabel(note.created_at)}</span>
+                        </div>
+                        <div className="qa-note-head-actions">
+                          <span className="qa-note-status qa-note-status-resolved">Resuelta</span>
+                          {onToggleResolved ? (
+                            <button className="qa-note-toggle qa-note-toggle-resolved" type="button" onClick={() => onToggleResolved(note, false)}>
+                              <span className="qa-check-icon qa-check-icon-resolved" />
+                              Reabrir
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <p>{note.body}</p>
+                      {note.resolved_at ? (
+                        <small>
+                          Resuelta por {note.resolved_by_name || "equipo"} el {formatDateTimeLabel(note.resolved_at)}.
+                        </small>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function QaSectionCard({ title, accent, count, total, children, sectionNotes, onCreateNote, onToggleNote }) {
+  return (
+    <div className="qa-section-card" style={{ "--qa-accent": accent }}>
+      <div className="qa-section-head">
+        <div>
+          <strong>{title}</strong>
+          <span>{count} registro{count !== 1 ? "s" : ""}</span>
+        </div>
+        <div className="qa-section-total">CRC {money(total)}</div>
+      </div>
+      <div className="qa-section-body">{children}</div>
+      <ReviewNotesThread
+        label={`Notas de ${title.toLowerCase()}`}
+        notes={sectionNotes}
+        onCreate={onCreateNote}
+        onToggleResolved={onToggleNote}
+      />
+    </div>
+  );
+}
+
+function QaItemRow({ title, meta, value, itemNotes, onCreateNote, onToggleNote }) {
+  return (
+    <div className="qa-item-card">
+      <div className="qa-item-row">
+        <div className="qa-item-copy">
+          <strong>{title}</strong>
+          {meta ? <span>{meta}</span> : null}
+        </div>
+        <strong className="qa-item-value">CRC {money(value)}</strong>
+      </div>
+      <ReviewNotesThread
+        label="Notas de este movimiento"
+        notes={itemNotes}
+        onCreate={onCreateNote}
+        onToggleResolved={onToggleNote}
+      />
+    </div>
+  );
+}
+
+function QaReviewDetail({ cierre, onCreateNote, onToggleNote }) {
+  if (!cierre) return null;
+
+  const reviewNotes = cierre.review_notes || [];
+  const payload = cierre.reportado_json || {};
+  const sectionNoteCreator = onCreateNote
+    ? (sectionKey) => (body) => onCreateNote(sectionKey, body)
+    : null;
+  const itemNoteCreator = onCreateNote
+    ? (sectionKey, movementId) => (body) => onCreateNote(sectionKey, body, movementId)
+    : null;
+
+  if (cierre.tipo === "tienda") {
+    const summary = normalizeTiendaSummary(cierre.resumen_reportado || {});
+    return (
+      <div className="qa-review-stack">
+        <div className="qa-review-header">
+          <div>
+            <div className="eyebrow">Revision QA</div>
+            <h3 className="qa-review-title">Detalle resumido de tienda</h3>
+            <p className="qa-review-copy">Resumen corto para revisar importes, diferencias y observaciones sin perder contexto.</p>
+          </div>
+        </div>
+
+        <div className="qa-review-grid">
+          <QaSectionCard
+            title="Resumen de ingresos"
+            accent="#0f766e"
+            count={TIENDA_RESUMEN_FIELDS.length}
+            total={summary.totalResumen}
+            sectionNotes={filterReviewNotes(reviewNotes, "resumen_ingresos")}
+            onCreateNote={sectionNoteCreator ? sectionNoteCreator("resumen_ingresos") : null}
+            onToggleNote={onToggleNote}
+          >
+            <div className="qa-flat-list">
+              {TIENDA_RESUMEN_FIELDS.map((field) => (
+                <div className="qa-flat-row" key={field.key}>
+                  <span>{field.label}</span>
+                  <strong>CRC {money(payload[field.key])}</strong>
+                </div>
+              ))}
+            </div>
+          </QaSectionCard>
+
+          <QaSectionCard
+            title="Detalle"
+            accent="#ff9f1a"
+            count={TIENDA_DETALLE_FIELDS.length}
+            total={summary.totalDetalle}
+            sectionNotes={filterReviewNotes(reviewNotes, "detalle")}
+            onCreateNote={sectionNoteCreator ? sectionNoteCreator("detalle") : null}
+            onToggleNote={onToggleNote}
+          >
+            <div className="qa-flat-list">
+              {TIENDA_DETALLE_FIELDS.map((field) => (
+                <div className="qa-flat-row" key={field.key}>
+                  <span>{field.label}</span>
+                  <strong>CRC {money(payload[field.key])}</strong>
+                </div>
+              ))}
+              <div className={cx("qa-flat-row", summary.diferencia !== 0 && "qa-flat-row-warning")}>
+                <span>Diferencia</span>
+                <strong>CRC {money(summary.diferencia)}</strong>
+              </div>
+            </div>
+          </QaSectionCard>
+        </div>
+
+        <QaSectionCard
+          title="Observaciones"
+          accent="#475569"
+          count={payload.observaciones ? 1 : 0}
+          total={0}
+          sectionNotes={filterReviewNotes(reviewNotes, "observaciones")}
+          onCreateNote={sectionNoteCreator ? sectionNoteCreator("observaciones") : null}
+          onToggleNote={onToggleNote}
+        >
+          <div className="qa-observation-copy">{payload.observaciones || "Sin observaciones del dependiente."}</div>
+        </QaSectionCard>
+      </div>
+    );
+  }
+
+  const vouchers = voucherSnapshot(payload.vouchers);
+  const sections = [
+    {
+      key: "depositos",
+      title: "Depositos",
+      accent: "#13315c",
+      items: (payload.depositos || []).map((item, index) => ({
+        id: item.id || `dep-${index}`,
+        title: item.referencia || `Deposito ${index + 1}`,
+        meta: item.referencia ? `Referencia ${item.referencia}` : "Sin referencia",
+        value: movementAmountValue(item),
+      })),
+    },
+    {
+      key: "creditos",
+      title: "Creditos",
+      accent: "#6c63ff",
+      items: (payload.creditos || []).map((item, index) => ({
+        id: item.id || `credito-${index}`,
+        title: item.cliente || `Credito ${index + 1}`,
+        meta: item.referencia ? `Ref. ${item.referencia}` : "Sin referencia",
+        value: movementAmountValue(item),
+      })),
+    },
+    {
+      key: "mercaderia_credito",
+      title: "Mercaderia a credito",
+      accent: "#7c3aed",
+      items: (payload.mercaderia_credito || []).map((item, index) => ({
+        id: item.id || `mcredito-${index}`,
+        title: item.cliente || `Mercaderia ${index + 1}`,
+        meta: item.referencia ? `Ref. ${item.referencia}` : "Sin referencia",
+        value: movementAmountValue(item),
+      })),
+    },
+    {
+      key: "sinpes",
+      title: "SINPE movil",
+      accent: "#0f9d76",
+      items: (payload.sinpes || []).map((item, index) => ({
+        id: item.id || `sinpe-${index}`,
+        title: movementComprobanteValue(item) || `SINPE ${index + 1}`,
+        meta: "Comprobante bancario",
+        value: movementAmountValue(item),
+      })),
+    },
+    {
+      key: "vales",
+      title: "Vales",
+      accent: "#d97706",
+      items: (payload.vales || []).map((item, index) => ({
+        id: item.id || `vale-${index}`,
+        title: movementComprobanteValue(item) || `Vale ${index + 1}`,
+        meta: "Referencia del vale",
+        value: movementAmountValue(item),
+      })),
+    },
+    {
+      key: "pagos",
+      title: "Pagos",
+      accent: "#d94b4b",
+      items: (payload.pagos || []).map((item, index) => ({
+        id: item.id || `pago-${index}`,
+        title: movementComprobanteValue(item) || `Pago ${index + 1}`,
+        meta: "Comprobante o motivo",
+        value: movementAmountValue(item),
+      })),
+    },
+  ].filter((section) => section.items.length > 0);
+
+  return (
+    <div className="qa-review-stack">
+      <div className="qa-review-header">
+        <div>
+          <div className="eyebrow">Revision QA</div>
+          <h3 className="qa-review-title">Detalle operativo del cierre</h3>
+          <p className="qa-review-copy">Cada bloque resume lo esencial para detectar errores de digitacion, montos fuera de lugar o referencias dudosas.</p>
+        </div>
+      </div>
+
+      <div className="qa-review-grid">
+        <QaSectionCard
+          title="Vouchers"
+          accent="#ff9f1a"
+          count={vouchers.length}
+          total={vouchers.reduce((sum, item) => sum + item.amount, 0)}
+          sectionNotes={filterReviewNotes(reviewNotes, "vouchers")}
+          onCreateNote={sectionNoteCreator ? sectionNoteCreator("vouchers") : null}
+          onToggleNote={onToggleNote}
+        >
+          <div className="qa-flat-list">
+            {vouchers.length > 0 ? vouchers.map((item) => (
+              <div className="qa-flat-row" key={item.label}>
+                <span>{item.label}</span>
+                <strong>CRC {money(item.amount)}</strong>
+              </div>
+            )) : <div className="qa-note-empty">Sin vouchers reportados.</div>}
+          </div>
+        </QaSectionCard>
+
+        <QaSectionCard
+          title="Mercaderia de contado"
+          accent="#0f766e"
+          count={parseAmount(payload.mercaderia_contado) > 0 ? 1 : 0}
+          total={payload.mercaderia_contado || 0}
+          sectionNotes={filterReviewNotes(reviewNotes, "mercaderia_contado")}
+          onCreateNote={sectionNoteCreator ? sectionNoteCreator("mercaderia_contado") : null}
+          onToggleNote={onToggleNote}
+        >
+          <div className="qa-flat-list">
+            <div className="qa-flat-row">
+              <span>Venta directa</span>
+              <strong>CRC {money(payload.mercaderia_contado)}</strong>
+            </div>
+          </div>
+        </QaSectionCard>
+
+        {sections.map((section) => (
+          <QaSectionCard
+            key={section.key}
+            title={section.title}
+            accent={section.accent}
+            count={section.items.length}
+            total={sumMovementItems(payload[section.key])}
+            sectionNotes={filterReviewNotes(reviewNotes, section.key)}
+            onCreateNote={sectionNoteCreator ? sectionNoteCreator(section.key) : null}
+            onToggleNote={onToggleNote}
+          >
+            <div className="qa-item-list">
+              {section.items.map((item) => (
+                <QaItemRow
+                  key={item.id}
+                  title={item.title}
+                  meta={item.meta}
+                  value={item.value}
+                  itemNotes={filterReviewNotes(reviewNotes, section.key, item.id)}
+                  onCreateNote={itemNoteCreator ? itemNoteCreator(section.key, item.id) : null}
+                  onToggleNote={onToggleNote}
+                />
+              ))}
+            </div>
+          </QaSectionCard>
+        ))}
+      </div>
+
+      <QaSectionCard
+        title="Observaciones"
+        accent="#475569"
+        count={payload.observaciones ? 1 : 0}
+        total={0}
+        sectionNotes={filterReviewNotes(reviewNotes, "observaciones")}
+        onCreateNote={sectionNoteCreator ? sectionNoteCreator("observaciones") : null}
+        onToggleNote={onToggleNote}
+      >
+        <div className="qa-observation-copy">{payload.observaciones || "Sin observaciones del empleado."}</div>
+      </QaSectionCard>
+    </div>
+  );
+}
+
 function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, children }) {
   return (
     <div className="app-shell">
@@ -1346,7 +1792,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
 
   useEffect(() => {
     load();
-  }, [token]);
+  }, [token, isAdmin]);
 
   useEffect(() => {
     if (draft.fecha && /^\d{4}-\d{2}-\d{2}$/.test(draft.fecha)) {
@@ -1415,7 +1861,7 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
         (acc, cierre) => {
           acc.total += 1;
           if (normalizeStatusValue(cierre.status) === "reconciled") acc.reconciled += 1;
-          if (["submitted", "validated"].includes(normalizeStatusValue(cierre.status))) acc.pending += 1;
+          if (["submitted", "reviewed", "approved"].includes(normalizeStatusValue(cierre.status))) acc.pending += 1;
           return acc;
         },
         { total: 0, reconciled: 0, pending: 0 },
@@ -1684,25 +2130,74 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
   );
 }
 
+function AdminTiendaEditor({ cierre, token, onSaved }) {
+  const [editPayload, setEditPayload] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState(null);
+
+  useEffect(() => {
+    if (!cierre) {
+      setEditPayload(null);
+      return;
+    }
+    setEditPayload({ ...emptyTiendaForm(), ...(cierre.reportado_json || {}) });
+    setMessage(null);
+  }, [cierre?.id]);
+
+  if (!editPayload) return null;
+
+  const saveEdits = async (payload) => {
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api(`/api/cierres/tienda/${cierre.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      }, token);
+      setMessage({ tone: "success", text: "Cierre de tienda actualizado correctamente." });
+      onSaved?.();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="admin-editor-stack">
+      {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+      <CierreTiendaForm
+        form={editPayload}
+        setForm={setEditPayload}
+        onSave={saveEdits}
+        editing
+        saving={saving}
+      />
+    </div>
+  );
+}
+
 function ReviewPanel({ token, user, employees = [] }) {
   const [cierres, setCierres] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [notes, setNotes] = useState("");
-  const [status, setStatus] = useState("validated");
+  const [selectedDetail, setSelectedDetail] = useState(null);
+  const [summaryNotes, setSummaryNotes] = useState("");
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [loading, setLoading] = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
   const [saving, setSaving] = useState(false);
   const [reconciling, setReconciling] = useState(false);
   const [message, setMessage] = useState(null);
   const [editMode, setEditMode] = useState(false);
   const isAdmin = user?.role === "admin";
+  const visibleStatusOptions = Object.entries(STATUS_META).filter(([value]) => isAdmin || value !== "deleted");
 
   const load = async () => {
     setLoading(true);
     try {
-      const data = await api("/api/cierres", {}, token);
+      const data = await api(`/api/cierres?include_deleted=${isAdmin ? "true" : "false"}`, {}, token);
       setCierres(data);
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
@@ -1711,30 +2206,48 @@ function ReviewPanel({ token, user, employees = [] }) {
     }
   };
 
+  const loadDetail = async (cierreId) => {
+    if (!cierreId) {
+      setSelectedDetail(null);
+      return;
+    }
+    setLoadingDetail(true);
+    try {
+      const data = await api(`/api/cierres/${cierreId}`, {}, token);
+      setSelectedDetail(data);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoadingDetail(false);
+    }
+  };
+
   useEffect(() => {
     load();
-  }, [token]);
+  }, [token, isAdmin]);
 
   const filtered = useMemo(
     () =>
       cierres.filter((cierre) => {
+        const normalizedStatus = normalizeStatusValue(cierre.status);
+        if (normalizedStatus === "deleted" && (!isAdmin || statusFilter !== "deleted")) return false;
         const matchesQuery =
           !query ||
           cierre.empleado?.toLowerCase().includes(query.toLowerCase()) ||
           String(cierre.fecha).includes(query);
-        const matchesStatus = statusFilter === "all" || normalizeStatusValue(cierre.status) === statusFilter;
+        const matchesStatus = statusFilter === "all" || normalizedStatus === statusFilter;
         const matchesEmployee = employeeFilter === "all" || String(cierre.employee_id) === employeeFilter;
         return matchesQuery && matchesStatus && matchesEmployee;
       }),
-    [cierres, query, statusFilter, employeeFilter],
+    [cierres, query, statusFilter, employeeFilter, isAdmin],
   );
 
   const employeeStats = useMemo(() => {
     if (employeeFilter === "all") return null;
-    const empCierres = cierres.filter((c) => String(c.employee_id) === employeeFilter);
+    const empCierres = cierres.filter((c) => String(c.employee_id) === employeeFilter && normalizeStatusValue(c.status) !== "deleted");
     const total = empCierres.length;
     const totalReportado = empCierres.reduce((sum, c) => sum + (c.resumen_reportado?.total_reportado || 0), 0);
-    const pending = empCierres.filter((c) => ["submitted", "validated"].includes(normalizeStatusValue(c.status))).length;
+    const pending = empCierres.filter((c) => ["submitted", "reviewed", "approved"].includes(normalizeStatusValue(c.status))).length;
     const reconciled = empCierres.filter((c) => normalizeStatusValue(c.status) === "reconciled").length;
     return { total, totalReportado, pending, reconciled };
   }, [cierres, employeeFilter]);
@@ -1749,40 +2262,55 @@ function ReviewPanel({ token, user, employees = [] }) {
     }
   }, [filtered, selectedId]);
 
-  const selected = useMemo(() => cierres.find((cierre) => cierre.id === selectedId) || null, [cierres, selectedId]);
-  const selectedStatus = normalizeStatusValue(selected?.status);
+  useEffect(() => {
+    if (!selectedId) {
+      setSelectedDetail(null);
+      return;
+    }
+    loadDetail(selectedId);
+  }, [selectedId, token]);
 
   useEffect(() => {
-    if (selected) {
-      setNotes(selected.audit_notes || "");
-      setStatus(
-        REVIEW_STATUS_OPTIONS.some((option) => option.value === normalizeStatusValue(selected.status))
-          ? normalizeStatusValue(selected.status)
-          : "validated",
-      );
+    if (selectedDetail) {
+      setSummaryNotes(selectedDetail.audit_notes || "");
       setEditMode(false);
     }
-  }, [selected]);
+  }, [selectedDetail]);
 
-  const submitReview = async () => {
-    if (!selected) return;
+  const selectedStatus = normalizeStatusValue(selectedDetail?.status);
+  const unresolvedNotes = (selectedDetail?.review_notes || []).filter((note) => !note.resolved).length;
+  const canMarkReviewed = user?.role === "supervisor" && selectedStatus === "submitted";
+  const canApprove = isAdmin && selectedStatus === "reviewed";
+  const canReconcile = isAdmin && selectedDetail?.tipo !== "tienda" && selectedStatus === "approved";
+  const canWriteSharedSummary = selectedStatus !== "deleted" && (canMarkReviewed || canApprove);
+  const reconcileLabel = selectedDetail?.gaspro_import_id && selectedStatus === "approved" ? "Reconciliar de nuevo" : "Conciliar con Gaspro";
+
+  const refreshCurrent = async (cierreId = selectedId) => {
+    await load();
+    if (cierreId) {
+      await loadDetail(cierreId);
+    }
+  };
+
+  const submitReview = async (nextStatus) => {
+    if (!selectedDetail) return;
     setSaving(true);
     setMessage(null);
     try {
       await api(
-        `/api/cierres/${selected.id}/review`,
+        `/api/cierres/${selectedDetail.id}/review`,
         {
           method: "POST",
           body: JSON.stringify({
-            validado_json: selected.validado_json || selected.reportado_json,
-            audit_notes: notes,
-            status,
+            validado_json: selectedDetail.validado_json || selectedDetail.reportado_json,
+            audit_notes: summaryNotes,
+            status: nextStatus,
           }),
         },
         token,
       );
-      setMessage({ tone: "success", text: "La revision se guardo correctamente." });
-      await load();
+      setMessage({ tone: "success", text: nextStatus === "reviewed" ? "El cierre quedó revisado." : "El cierre quedó aprobado." });
+      await refreshCurrent(selectedDetail.id);
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
     } finally {
@@ -1791,13 +2319,13 @@ function ReviewPanel({ token, user, employees = [] }) {
   };
 
   const reconcileSelected = async () => {
-    if (!selected || !isAdmin || selectedStatus !== "validated") return;
+    if (!selectedDetail || !canReconcile) return;
     setReconciling(true);
     setMessage(null);
     try {
-      await api(`/api/cierres/${selected.id}/reconcile`, { method: "POST" }, token);
-      setMessage({ tone: "success", text: "El cierre se concilio correctamente." });
-      await load();
+      await api(`/api/cierres/${selectedDetail.id}/reconcile`, { method: "POST" }, token);
+      setMessage({ tone: "success", text: "La conciliacion con Gaspro se aplico correctamente." });
+      await refreshCurrent(selectedDetail.id);
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
     } finally {
@@ -1805,19 +2333,100 @@ function ReviewPanel({ token, user, employees = [] }) {
     }
   };
 
+  const createNote = async (sectionKey, body, movementId = null) => {
+    if (!selectedDetail) return;
+    setMessage(null);
+    try {
+      await api(
+        `/api/cierres/${selectedDetail.id}/notes`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            target_scope: movementId ? "item" : "section",
+            section_key: sectionKey,
+            movement_id: movementId,
+            body,
+          }),
+        },
+        token,
+      );
+      await refreshCurrent(selectedDetail.id);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+      throw err;
+    }
+  };
+
+  const toggleNoteResolved = async (note, resolved) => {
+    if (!selectedDetail) return;
+    setMessage(null);
+    try {
+      await api(
+        `/api/cierres/${selectedDetail.id}/notes/${note.id}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({ resolved }),
+        },
+        token,
+      );
+      await refreshCurrent(selectedDetail.id);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    }
+  };
+
+  const deleteSelected = async () => {
+    if (!selectedDetail || !isAdmin) return;
+    if (!window.confirm("Este cierre se movera a la papelera. ¿Deseas continuar?")) return;
+    const reason = window.prompt("Motivo de papelera (opcional):", "") || "";
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api(
+        `/api/cierres/${selectedDetail.id}`,
+        {
+          method: "DELETE",
+          body: JSON.stringify({ reason }),
+        },
+        token,
+      );
+      setMessage({ tone: "success", text: "El cierre fue enviado a la papelera. Filtra por 'En papelera' si necesitas restaurarlo." });
+      await refreshCurrent(selectedDetail.id);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const restoreSelected = async () => {
+    if (!selectedDetail || !isAdmin) return;
+    setSaving(true);
+    setMessage(null);
+    try {
+      await api(`/api/cierres/${selectedDetail.id}/restore`, { method: "POST" }, token);
+      setMessage({ tone: "success", text: "El cierre fue restaurado." });
+      await refreshCurrent(selectedDetail.id);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
-    <div className="dashboard-grid">
+    <div className="dashboard-grid review-dashboard-grid">
       <Panel
-        eyebrow="Bandeja"
-        title="Cierres"
-        subtitle="Busca y selecciona."
+        eyebrow="Bandeja QA"
+        title="Cierres en revision"
+        subtitle="Filtra por estado, empleado o fecha y entra directo al detalle que necesita atencion."
         accent="#13315c"
       >
         <div className="toolbar-grid">
           <TextField label="Buscar" value={query} onChange={setQuery} placeholder="Empleado o fecha" />
           <SelectField label="Estado" value={statusFilter} onChange={setStatusFilter}>
             <option value="all">Todos los estados</option>
-            {Object.entries(STATUS_META).map(([value, meta]) => (
+            {visibleStatusOptions.map(([value, meta]) => (
               <option key={value} value={value}>
                 {meta.label}
               </option>
@@ -1852,14 +2461,17 @@ function ReviewPanel({ token, user, employees = [] }) {
           <div className="selectable-list">
             {filtered.map((cierre) => (
               <button
-                className={cx("selectable-card", selectedId === cierre.id && "is-active")}
+                className={cx("selectable-card selectable-card-qa", selectedId === cierre.id && "is-active")}
                 key={cierre.id}
                 type="button"
                 onClick={() => setSelectedId(cierre.id)}
               >
                 <div className="selectable-card-copy">
                   <strong>{cierre.empleado}</strong>
-                  <span>{formatDateLabel(cierre.fecha)} / Turno {cierre.turno || "-"}</span>
+                  <span>{formatDateLabel(cierre.fecha)} / {cierre.tipo === "tienda" ? "Tienda" : `Turno ${cierre.turno || "-"}`}</span>
+                  <small>
+                    {cierre.unresolved_note_count ? `${cierre.unresolved_note_count} nota(s) pendiente(s)` : "Sin notas pendientes"}
+                  </small>
                 </div>
                 <div className="selectable-card-meta">
                   <StatusPill status={cierre.status} />
@@ -1872,72 +2484,108 @@ function ReviewPanel({ token, user, employees = [] }) {
       </Panel>
 
       <Panel
-        eyebrow="Detalle"
-        title={selected ? selected.empleado : "Selecciona un cierre"}
-        subtitle={selected ? `${formatDateLabel(selected.fecha)} / Turno ${selected.turno || "-"}` : "El detalle aparece aqui."}
+        eyebrow="Consola QA"
+        title={selectedDetail ? selectedDetail.empleado : "Selecciona un cierre"}
+        subtitle={selectedDetail ? `${formatDateLabel(selectedDetail.fecha)} / ${selectedDetail.tipo === "tienda" ? "Cierre de tienda" : `Turno ${selectedDetail.turno || "-"}`}` : "El detalle aparece aqui."}
         accent="#ff9f1a"
       >
         {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
 
-        {selected ? (
+        {selectedDetail ? (
           <div className="stack">
-            <div className="detail-meta-row">
-              <StatusPill status={selected.status} />
-              <span className="meta-chip">Total reportado: CRC {money(selected.resumen_reportado?.total_reportado)}</span>
-              {selected.gaspro_mode ? <span className="meta-chip">Gaspro: {selected.gaspro_mode}</span> : null}
-              {isAdmin && selected.tipo !== "tienda" ? (
-                <button
-                  className={cx("btn", editMode ? "btn-ghost-danger" : "btn-secondary", "btn-sm")}
-                  type="button"
-                  onClick={() => setEditMode(!editMode)}
-                >
-                  {editMode ? "Cancelar edicion" : "Editar movimientos"}
+            <div className="detail-meta-row detail-meta-row-spaced">
+              <StatusPill status={selectedDetail.status} />
+              <span className="meta-chip">Total reportado: CRC {money(selectedDetail.resumen_reportado?.total_reportado)}</span>
+              <span className="meta-chip">Notas pendientes: {unresolvedNotes}</span>
+              {selectedDetail.gaspro_mode ? <span className="meta-chip">Gaspro: {selectedDetail.gaspro_mode}</span> : null}
+            </div>
+
+            <div className="qa-action-bar">
+              {user?.role === "supervisor" && (
+                <button className="btn btn-primary" type="button" onClick={() => submitReview("reviewed")} disabled={!canMarkReviewed || saving || reconciling}>
+                  {saving && canMarkReviewed ? "Guardando..." : "Marcar revisado"}
+                </button>
+              )}
+              {isAdmin && (
+                <button className="btn btn-primary" type="button" onClick={() => submitReview("approved")} disabled={!canApprove || saving || reconciling}>
+                  {saving && canApprove ? "Guardando..." : "Aprobar"}
+                </button>
+              )}
+              {isAdmin ? (
+                <button className="btn btn-secondary" type="button" onClick={() => setEditMode((value) => !value)} disabled={selectedStatus === "deleted"}>
+                  {editMode ? "Cancelar edicion" : "Editar cierre"}
                 </button>
               ) : null}
-            </div>
-
-            {editMode && isAdmin && selected.tipo !== "tienda" ? (
-              <AdminCierreEditor
-                cierre={selected}
-                token={token}
-                onSaved={() => { setEditMode(false); load(); }}
-              />
-            ) : (
-              <CierreSnapshot
-                payload={selected.reportado_json}
-                reportadoSummary={selected.resumen_reportado}
-                validadoSummary={selected.resumen_validado}
-                auditNotes={selected.audit_notes}
-              />
-            )}
-
-            <div className="review-form-grid">
-              <SelectField label="Nuevo estado" value={status} onChange={setStatus}>
-                {REVIEW_STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </SelectField>
-
-              <TextAreaField
-                label="Notas"
-                value={notes}
-                onChange={setNotes}
-                placeholder="Observaciones del cierre"
-              />
-            </div>
-
-            <div className="form-submit-row">
-              <button className="btn btn-primary" type="button" onClick={submitReview} disabled={saving || reconciling}>
-                {saving ? "Guardando..." : "Guardar cambios"}
-              </button>
-              {isAdmin && selectedStatus === "validated" ? (
+              {isAdmin && canReconcile ? (
                 <button className="btn btn-secondary" type="button" onClick={reconcileSelected} disabled={saving || reconciling}>
-                  {reconciling ? "Conciliando..." : "Conciliar"}
+                  {reconciling ? "Conciliando..." : reconcileLabel}
+                </button>
+              ) : null}
+              {isAdmin && selectedStatus !== "deleted" ? (
+                <button className="btn btn-ghost-danger" type="button" onClick={deleteSelected} disabled={saving || reconciling}>
+                  Enviar a papelera
+                </button>
+              ) : null}
+              {isAdmin && selectedStatus === "deleted" ? (
+                <button className="btn btn-secondary" type="button" onClick={restoreSelected} disabled={saving || reconciling}>
+                  Restaurar
                 </button>
               ) : null}
             </div>
+
+            <div className="qa-shared-note">
+              <TextAreaField
+                label="Resumen QA compartido"
+                value={summaryNotes}
+                onChange={setSummaryNotes}
+                placeholder={canWriteSharedSummary ? "Resumen visible para supervisor y administrador." : "Usa las notas por sección para dejar seguimiento adicional."}
+                disabled={!canWriteSharedSummary}
+                readOnly={!canWriteSharedSummary}
+              />
+              <p>
+                {canWriteSharedSummary
+                  ? "Este resumen acompaña el cierre completo. Las notas finas viven dentro de cada sección o movimiento."
+                  : "Este resumen queda bloqueado cuando ya no hay un cambio de estado pendiente. Para seguimiento adicional, usa las notas por sección o por movimiento."}
+              </p>
+            </div>
+
+            {loadingDetail ? <EmptyState title="Cargando detalle" body="Preparando el cierre seleccionado." /> : null}
+
+            {editMode && isAdmin ? (
+              selectedDetail.tipo === "tienda" ? (
+                <AdminTiendaEditor
+                  cierre={selectedDetail}
+                  token={token}
+                  onSaved={async () => {
+                    setEditMode(false);
+                    await refreshCurrent(selectedDetail.id);
+                  }}
+                />
+              ) : (
+                <AdminCierreEditor
+                  cierre={selectedDetail}
+                  token={token}
+                  onSaved={async () => {
+                    setEditMode(false);
+                    await refreshCurrent(selectedDetail.id);
+                  }}
+                />
+              )
+            ) : (
+              <>
+                <CierreSnapshot
+                  payload={selectedDetail.reportado_json}
+                  reportadoSummary={selectedDetail.resumen_reportado}
+                  validadoSummary={selectedDetail.resumen_validado}
+                  auditNotes={selectedDetail.audit_notes}
+                />
+                <QaReviewDetail
+                  cierre={selectedDetail}
+                  onCreateNote={selectedStatus === "deleted" ? null : createNote}
+                  onToggleNote={selectedStatus === "deleted" ? null : toggleNoteResolved}
+                />
+              </>
+            )}
           </div>
         ) : (
           <EmptyState title="Sin seleccion" body="Elige un cierre." />
@@ -1993,7 +2641,10 @@ function GasproPanel({ token }) {
     setMessage(null);
     try {
       const data = await api("/api/gaspro/import", { method: "POST", body: form }, token);
-      setMessage({ tone: "success", text: `Importacion ${data.import_id} aplicada a ${data.matched_cierres} cierres.` });
+      setMessage({
+        tone: "success",
+        text: `Importacion ${data.import_id}: ${data.matched_cierres} conciliados, ${data.skipped_cierres || 0} omitidos y ${data.already_reconciled || 0} ya conciliados.`,
+      });
       setFile(null);
       setFileInputKey((current) => current + 1);
       await load();
