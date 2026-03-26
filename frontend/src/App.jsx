@@ -1494,27 +1494,27 @@ function AppShell({ user, title, subtitle, onLogout, isDark, onToggleTheme, chil
     <div className="app-shell">
       <div className="shell-frame">
         <header className="shell-topbar">
-          <div className="brand-lockup">
+          <div className="topbar-brand-area">
             <img src="/logo-lamarina.jpeg" alt="Servicentro La Marina" className="brand-logo logo-contain" />
-            <div className="brand-copy">
-              <div className="brand-kicker">Servicentro La Marina</div>
-              <div className="brand-title">Cierre de caja</div>
+          </div>
+
+          <div className="topbar-center">
+            <div className="topbar-identity">
+              <span className="topbar-kicker">Servicentro La Marina</span>
+              <h1 className="topbar-name">{user.full_name}</h1>
+              <div className="topbar-context">
+                <span className="user-role">{ROLE_LABELS[user.role] || user.role}</span>
+                <span className="topbar-divider" />
+                <span className="topbar-page">{title}</span>
+              </div>
             </div>
           </div>
 
-          <div className="shell-copy">
-            <span className="shell-page-label">{title}</span>
-            <h1>{user.full_name}</h1>
-          </div>
-
-          <div className="shell-actions">
+          <div className="topbar-actions">
             <ThemeToggle isDark={isDark} onToggle={onToggleTheme} />
-            <div className="shell-user-card">
-              <span className="user-role">{ROLE_LABELS[user.role] || user.role}</span>
-              <button className="btn btn-secondary" type="button" onClick={onLogout}>
-                Cerrar sesion
-              </button>
-            </div>
+            <button className="btn btn-ghost btn-sm" type="button" onClick={onLogout}>
+              Cerrar sesion
+            </button>
           </div>
         </header>
 
