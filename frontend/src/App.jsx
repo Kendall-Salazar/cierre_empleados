@@ -1642,6 +1642,12 @@ function CierreForm({
     [form],
   );
 
+  const [expandedSection, setExpandedSection] = useState("01");
+
+  const toggleSection = (idx) => {
+    setExpandedSection((prev) => (prev === idx ? null : idx));
+  };
+
   const setVoucher = (key, value) => {
     setForm((previous) => ({
       ...previous,
@@ -1655,23 +1661,25 @@ function CierreForm({
   };
 
   return (
-    <form className="form-stack" onSubmit={submit}>
-      <div className="form-progress-bar">
-        <span>{movementCount} movimientos</span>
-        <strong>CRC {money(summary.totalReportado)}</strong>
-      </div>
-
-      <div className="form-status-bar">
-        <span className="form-status-bar-title">
-          {editing ? "Editando cierre" : "Nuevo cierre"} — {movementCount} movimiento{movementCount !== 1 ? "s" : ""}
-        </span>
-        <span className="form-status-total">CRC {money(summary.totalReportado)}</span>
+    <form className="form-stack" onSubmit={submit} style={{ paddingBottom: "12px" }}>
+      <div className="form-status-bar" style={{ background: "transparent", border: "none", padding: "0 0 0.5rem 0", marginBottom: "0.5rem", boxShadow: "none" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+          <h2 style={{ margin: 0, fontSize: "1.5rem", color: "var(--text-strong)" }}>
+            {editing ? "Editando cierre" : "Nuevo cierre"}
+          </h2>
+          <p style={{ margin: 0, opacity: 0.7, fontSize: "0.95rem" }}>
+            {movementCount} movimientos registrados
+          </p>
+        </div>
       </div>
 
       <FormSection
         index="01"
         title="Contexto del turno"
         accent="#ea580c"
+        isExpanded={expandedSection === "01"}
+        onToggle={() => toggleSection("01")}
+        summaryValue={undefined}
       >
         <div className="field-grid field-grid-3">
           <TextField label="Fecha" type="date" value={form.fecha} onChange={(value) => setForm({ ...form, fecha: value })} />
@@ -1708,6 +1716,9 @@ function CierreForm({
         index="02"
         title="Mercaderia de contado"
         accent="#0f766e"
+        isExpanded={expandedSection === "02"}
+        onToggle={() => toggleSection("02")}
+        summaryValue={parseAmount(form.mercaderia_contado)}
       >
         <div className="field-grid field-grid-3">
           <MoneyField
@@ -1722,32 +1733,47 @@ function CierreForm({
         index="03"
         title="Vouchers y tarjetas"
         accent="#ff9f1a"
+        isExpanded={expandedSection === "03"}
+        onToggle={() => toggleSection("03")}
+        summaryValue={summary.totalVouchers}
       >
         <VoucherGrid vouchers={form.vouchers} setVoucher={setVoucher} />
       </FormSection>
 
-      {MOVEMENT_SECTIONS.map((section) => (
-        section.layout === "compact" ? (
-        <CompactMovementListEditor
-          key={section.key}
-          config={section}
-          items={form[section.key] || []}
-          setItems={(items) => setForm({ ...form, [section.key]: items })}
-        />
+      {MOVEMENT_SECTIONS.map((section) => {
+        const items = form[section.key] || [];
+        const subtotal = items.reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0);
+
+        return section.layout === "compact" ? (
+          <CompactMovementListEditor
+            key={section.key}
+            config={section}
+            items={items}
+            setItems={(newItems) => setForm({ ...form, [section.key]: newItems })}
+            isExpanded={expandedSection === section.index}
+            onToggle={() => toggleSection(section.index)}
+            summaryValue={subtotal}
+          />
         ) : (
-        <MovementListEditor
-          key={section.key}
-          config={section}
-          items={form[section.key] || []}
-          setItems={(items) => setForm({ ...form, [section.key]: items })}
-        />
-        )
-      ))}
+          <MovementListEditor
+            key={section.key}
+            config={section}
+            items={items}
+            setItems={(newItems) => setForm({ ...form, [section.key]: newItems })}
+            isExpanded={expandedSection === section.index}
+            onToggle={() => toggleSection(section.index)}
+            summaryValue={subtotal}
+          />
+        );
+      })}
 
       <FormSection
         index="09"
         title="Observaciones"
         accent="#475569"
+        isExpanded={expandedSection === "09"}
+        onToggle={() => toggleSection("09")}
+        summaryValue={undefined}
       >
         <TextAreaField
           label="Notas del cierre"
@@ -1757,13 +1783,34 @@ function CierreForm({
         />
       </FormSection>
 
-      <div className="form-submit-row">
-        <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyForm(defaultTurno))} disabled={saving}>
-          Limpiar
-        </button>
-        <button className="btn btn-primary" type="submit" disabled={saving || limitReached}>
-          {saving ? "Guardando..." : limitReached ? "Limite alcanzado" : editing ? "Guardar cambios" : "Guardar cierre"}
-        </button>
+      <div className="modern-sticky-footer" style={{
+        position: "sticky",
+        bottom: "16px",
+        display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
+        padding: "16px 20px",
+        borderRadius: "16px",
+        boxShadow: "0 -4px 32px rgba(0, 0, 0, 0.12)",
+        backdropFilter: "blur(16px)",
+        WebkitBackdropFilter: "blur(16px)",
+        zIndex: 100,
+        marginTop: "3rem",
+        backgroundColor: "var(--panel-bg, var(--bg-surface, rgba(255, 255, 255, 0.85)))",
+        border: "1px solid var(--border-color, #e2e8f0)"
+      }}>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--text-muted, #64748b)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" }}>Total a reportar</span>
+          <strong style={{ fontSize: "1.35rem", color: "var(--text-strong, #0f172a)", lineHeight: 1.2 }}>CRC {money(summary.totalReportado)}</strong>
+        </div>
+        <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+          <button className="btn btn-ghost" type="button" onClick={() => setForm(emptyForm(defaultTurno))} disabled={saving} style={{ padding: "10px 16px" }}>
+            Limpiar
+          </button>
+          <button className="btn btn-primary" style={{ padding: "10px 24px", borderRadius: "12px", fontSize: "1rem" }} type="submit" disabled={saving || limitReached}>
+            {saving ? "Guardando..." : limitReached ? "Límite alcanzado" : editing ? "Guardar cambios" : "Finalizar cierre"}
+          </button>
+        </div>
       </div>
     </form>
   );
