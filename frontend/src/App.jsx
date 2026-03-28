@@ -864,7 +864,7 @@ function MovementListEditor({ config, items, setItems }) {
   );
 }
 
-function CompactMovementListEditor({ config, items, setItems }) {
+function CompactMovementListEditor({ config, items, setItems, isExpanded = true, onToggle, summaryValue }) {
   const subtotal = useMemo(
     () => (items || []).reduce((acc, item) => acc + parseAmount(movementAmountValue(item)), 0),
     [items],
@@ -899,6 +899,9 @@ function CompactMovementListEditor({ config, items, setItems }) {
       title={config.title}
       subtitle={config.subtitle}
       accent={config.accent}
+      isExpanded={isExpanded}
+      onToggle={onToggle}
+      summaryValue={summaryValue !== undefined ? summaryValue : subtotal}
       extra={items.length > 0 ? <span className="section-chip">{items.length} registros</span> : null}
     >
       {items.length === 0 ? (
