@@ -1551,7 +1551,7 @@ def get_cierre(cierre_id: int, user=Depends(get_current_user), db=Depends(get_db
 def update_cierre(cierre_id: int, payload: CierrePayload, user=Depends(get_current_user), db=Depends(get_db)):
     cierre = get_cierre_or_404(db, cierre_id)
     assert_can_edit_cierre(cierre, user)
-    employee_id = payload.employee_id if user["role"] in {"admin", "supervisor"} and payload.employee_id else cierre.get("employee_id")
+    employee_id = payload.employee_id if user["role"] == "admin" and payload.employee_id else cierre.get("employee_id")
     next_status = normalize_cierre_status(cierre.get("status"))
     reset_reconciliation = False
     if user["role"] == "admin" and next_status == STATUS_RECONCILED:
@@ -2099,7 +2099,7 @@ def _auto_conciliar(db, import_id: int, date_from: date, date_to: date):
 def import_despacho_detail(
     file: UploadFile = File(...),
     db=Depends(get_db),
-    user=Depends(require_roles("supervisor", "admin")),
+    user=Depends(require_roles("admin")),
 ):
     DESPACHO_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     tmp_path = DESPACHO_UPLOAD_DIR / f"tmp_{uuid.uuid4().hex}_{file.filename}"

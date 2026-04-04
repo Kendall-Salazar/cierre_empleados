@@ -987,48 +987,17 @@ function DetailList({ title, accent = "#ff9f1a", items }) {
   );
 }
 
-function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes }) {
-  if (!payload) {
+function CierreResumen({ cierre }) {
+  if (!cierre) {
     return <EmptyState title="Sin detalle disponible" body="Selecciona un cierre para ver su resumen." />;
   }
-
-  const vouchers = voucherSnapshot(payload.vouchers).map((item) => ({
-    title: item.label,
-    meta: item.qty > 0 ? `${item.qty} movimientos` : "Sin cantidad reportada",
-    value: `CRC ${money(item.amount)}`,
-  }));
-
-  const depositos = (payload.depositos || []).map((item, index) => ({
-    id: item.id || `dep-${index}`,
-    title: item.referencia || `Deposito ${index + 1}`,
-    meta: item.referencia ? `ID: ${item.referencia}` : "Sin ID",
-    value: `CRC ${money(item.monto_reportado)}`,
-  }));
-
-  const movementGroups = [
-    { title: "Creditos", accent: "#6c63ff", items: payload.creditos || [] },
-    { title: "Mercaderia a credito", accent: "#7c3aed", items: payload.mercaderia_credito || [] },
-    { title: "SINPE movil", accent: "#0f9d76", items: payload.sinpes || [] },
-    { title: "Vales", accent: "#d97706", items: payload.vales || [] },
-    { title: "Pagos", accent: "#d94b4b", items: payload.pagos || [] },
-  ]
-    .map((group) => ({
-      ...group,
-      items: group.items.map((item, index) => ({
-        id: item.id || `${group.title}-${index}`,
-        title: movementDisplayLabel(item, group.title, index),
-        meta: movementMetaLabel(item),
-        value: `CRC ${money(movementAmountValue(item))}`,
-      })),
-    }))
-    .filter((group) => group.items.length > 0);
-
-  const reportado = normalizeSummary(reportadoSummary) || summarizePayload(payload);
-  const validado = normalizeSummary(validadoSummary) || reportado;
+  const payload = cierre.reportado_json || {};
+  const reportado = normalizeSummary(cierre.resumen_reportado) || summarizePayload(payload);
+  const validado = normalizeSummary(cierre.resumen_validado) || reportado;
   const delta = validado.totalReportado - reportado.totalReportado;
 
   return (
-    <div className="snapshot-stack">
+    <div className="resumen-stack">
       <div className="metric-grid metric-grid-tight">
         <MetricCard
           label="Reportado"
@@ -1050,23 +1019,7 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
         />
       </div>
 
-      <SummaryBoard payload={payload} summary={reportadoSummary} compact />
-
-      <div className="detail-grid">
-        {parseAmount(payload.mercaderia_contado) > 0 && (
-          <DetailList title="Mercaderia de contado" accent="#0f766e" items={[{
-            id: "merc-contado",
-            title: "Mercaderia de contado",
-            meta: "Venta directa",
-            value: `CRC ${money(payload.mercaderia_contado)}`,
-          }]} />
-        )}
-        <DetailList title="Vouchers" accent="#ff9f1a" items={vouchers} />
-        {depositos.length > 0 && <DetailList title="Depositos" accent="#13315c" items={depositos} />}
-        {movementGroups.map((group) => (
-          <DetailList key={group.title} title={group.title} accent={group.accent} items={group.items} />
-        ))}
-      </div>
+      <SummaryBoard payload={payload} summary={cierre.resumen_reportado} compact />
 
       {payload.observaciones ? (
         <div className="note-card">
@@ -1075,10 +1028,10 @@ function CierreSnapshot({ payload, reportadoSummary, validadoSummary, auditNotes
         </div>
       ) : null}
 
-      {auditNotes ? (
+      {cierre.audit_notes ? (
         <div className="note-card note-card-alt">
           <strong>Notas de revision</strong>
-          <p>{auditNotes}</p>
+          <p>{cierre.audit_notes}</p>
         </div>
       ) : null}
     </div>
@@ -1143,23 +1096,16 @@ function ReviewNotesThread({ label, notes = [], onCreate, onToggleResolved }) {
           {unresolved.length > 0 ? (
             <div className="qa-note-list">
               {unresolved.map((note) => (
-                <div className="qa-note-card" key={note.id}>
-                  <div className="qa-note-head">
-                    <div>
-                      <strong>{note.author_name}</strong>
-                      <span>{ROLE_LABELS[note.author_role] || note.author_role} / {formatDateTimeLabel(note.created_at)}</span>
-                    </div>
-                    <div className="qa-note-head-actions">
-                      <span className="qa-note-status">Pendiente</span>
-                      {onToggleResolved ? (
-                        <button className="qa-note-toggle" type="button" onClick={() => onToggleResolved(note, true)}>
-                          <span className="qa-check-icon" />
-                          Resolver
-                        </button>
-                      ) : null}
-                    </div>
+                <div className="qa-note-row" key={note.id}>
+                  <div className="qa-note-row-copy">
+                    <strong>{note.author_name}</strong>
+                    <span>{note.body}</span>
                   </div>
-                  <p>{note.body}</p>
+                  {onToggleResolved ? (
+                    <button className="qa-note-resolve-btn" type="button" onClick={() => onToggleResolved(note, true)} title="Resolver">
+                      &#10003;
+                    </button>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -1175,27 +1121,15 @@ function ReviewNotesThread({ label, notes = [], onCreate, onToggleResolved }) {
               {showResolved ? (
                 <div className="qa-note-list qa-note-list-resolved">
                   {resolved.map((note) => (
-                    <div className="qa-note-card qa-note-card-resolved" key={note.id}>
-                      <div className="qa-note-head">
-                        <div>
-                          <strong>{note.author_name}</strong>
-                          <span>{ROLE_LABELS[note.author_role] || note.author_role} / {formatDateTimeLabel(note.created_at)}</span>
-                        </div>
-                        <div className="qa-note-head-actions">
-                          <span className="qa-note-status qa-note-status-resolved">Resuelta</span>
-                          {onToggleResolved ? (
-                            <button className="qa-note-toggle qa-note-toggle-resolved" type="button" onClick={() => onToggleResolved(note, false)}>
-                              <span className="qa-check-icon qa-check-icon-resolved" />
-                              Reabrir
-                            </button>
-                          ) : null}
-                        </div>
+                    <div className="qa-note-row qa-note-row-resolved" key={note.id}>
+                      <div className="qa-note-row-copy">
+                        <strong>{note.author_name}</strong>
+                        <span>{note.body}</span>
                       </div>
-                      <p>{note.body}</p>
-                      {note.resolved_at ? (
-                        <small>
-                          Resuelta por {note.resolved_by_name || "equipo"} el {formatDateTimeLabel(note.resolved_at)}.
-                        </small>
+                      {onToggleResolved ? (
+                        <button className="qa-note-resolve-btn" type="button" onClick={() => onToggleResolved(note, false)} title="Reabrir">
+                          &#8634;
+                        </button>
                       ) : null}
                     </div>
                   ))}
@@ -1210,11 +1144,15 @@ function ReviewNotesThread({ label, notes = [], onCreate, onToggleResolved }) {
 }
 
 function QaSectionCard({ title, accent, count, total, children, sectionNotes, onCreateNote, onToggleNote }) {
+  const unresolvedCount = (sectionNotes || []).filter((n) => !n.resolved).length;
   return (
     <div className="qa-section-card" style={{ "--qa-accent": accent }}>
       <div className="qa-section-head">
         <div>
-          <strong>{title}</strong>
+          <strong>
+            {title}
+            {unresolvedCount > 0 ? <span className="qa-count-badge qa-count-badge-warn">{unresolvedCount}</span> : null}
+          </strong>
           <span>{count} registro{count !== 1 ? "s" : ""}</span>
         </div>
         <div className="qa-section-total">CRC {money(total)}</div>
@@ -2418,6 +2356,33 @@ function AdminTiendaEditor({ cierre, token, onSaved }) {
   );
 }
 
+function SharedNotesCollapsible({ summaryNotes, onChangeSummaryNotes, canWrite }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasContent = summaryNotes && summaryNotes.trim().length > 0;
+
+  return (
+    <div className="qa-shared-note-collapsible">
+      <button className="qa-shared-note-toggle" type="button" onClick={() => setExpanded((v) => !v)}>
+        <span>Notas generales</span>
+        {hasContent ? <span className="qa-count-badge">1</span> : null}
+        <span className="qa-toggle-arrow">{expanded ? "\u25B2" : "\u25BC"}</span>
+      </button>
+      {expanded ? (
+        <div className="qa-shared-note-body">
+          <TextAreaField
+            label="Observaciones del cierre"
+            value={summaryNotes}
+            onChange={onChangeSummaryNotes}
+            placeholder={canWrite ? "Escribe observaciones generales." : "Sin permisos para editar."}
+            disabled={!canWrite}
+            readOnly={!canWrite}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ReviewPanel({ token, user, employees = [] }) {
   const [cierres, setCierres] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -2433,6 +2398,7 @@ function ReviewPanel({ token, user, employees = [] }) {
   const [reconciling, setReconciling] = useState(false);
   const [message, setMessage] = useState(null);
   const [editMode, setEditMode] = useState(false);
+  const [detailTab, setDetailTab] = useState("resumen");
   const [viewTrash, setViewTrash] = useState(false);
   const isAdmin = user?.role === "admin";
   const visibleStatusOptions = Object.entries(STATUS_META).filter(([value]) => value !== "deleted" && (isAdmin || value !== "deleted"));
@@ -2521,6 +2487,7 @@ function ReviewPanel({ token, user, employees = [] }) {
     if (selectedDetail) {
       setSummaryNotes(selectedDetail.audit_notes || "");
       setEditMode(false);
+      setDetailTab("resumen");
     }
   }, [selectedDetail]);
 
@@ -2758,59 +2725,59 @@ function ReviewPanel({ token, user, employees = [] }) {
           <div className="stack">
             <div className="detail-meta-row detail-meta-row-spaced">
               <StatusPill status={selectedDetail.status} />
-              <span className="meta-chip">Total reportado: CRC {money(selectedDetail.resumen_reportado?.total_reportado)}</span>
-              <span className="meta-chip">Notas pendientes: {unresolvedNotes}</span>
+              <span className="meta-chip">Total: CRC {money(selectedDetail.resumen_reportado?.total_reportado)}</span>
+              {unresolvedNotes > 0 ? <span className="meta-chip meta-chip-warn">Notas: {unresolvedNotes}</span> : null}
               {selectedDetail.gaspro_mode ? <span className="meta-chip">Gaspro: {selectedDetail.gaspro_mode}</span> : null}
             </div>
 
             <div className="qa-action-bar">
-              {user?.role === "supervisor" && (
-                <button className="btn btn-primary" type="button" onClick={() => submitReview("reviewed")} disabled={!canMarkReviewed || saving || reconciling}>
-                  {saving && canMarkReviewed ? "Guardando..." : "Marcar revisado"}
-                </button>
-              )}
-              {isAdmin && (
-                <button className="btn btn-primary" type="button" onClick={() => submitReview("approved")} disabled={!canApprove || saving || reconciling}>
-                  {saving && canApprove ? "Guardando..." : "Aprobar"}
-                </button>
-              )}
-              {(isAdmin || user?.role === "supervisor") ? (
-                <button className="btn btn-secondary" type="button" onClick={() => setEditMode((value) => !value)} disabled={selectedStatus === "deleted"}>
-                  {editMode ? "Cancelar edicion" : "Editar cierre"}
-                </button>
-              ) : null}
-              {isAdmin && canReconcile ? (
-                <button className="btn btn-secondary" type="button" onClick={reconcileSelected} disabled={saving || reconciling}>
-                  {reconciling ? "Conciliando..." : reconcileLabel}
-                </button>
-              ) : null}
-              {isAdmin && selectedStatus !== "deleted" ? (
-                <button className="btn btn-ghost-danger" type="button" onClick={deleteSelected} disabled={saving || reconciling}>
-                  Enviar a papelera
-                </button>
-              ) : null}
-              {isAdmin && selectedStatus === "deleted" ? (
-                <button className="btn btn-secondary" type="button" onClick={restoreSelected} disabled={saving || reconciling}>
-                  Restaurar
-                </button>
-              ) : null}
+              <div className="qa-action-group">
+                {user?.role === "supervisor" && (
+                  <button className="btn btn-primary btn-sm" type="button" onClick={() => submitReview("reviewed")} disabled={!canMarkReviewed || saving || reconciling}>
+                    {saving && canMarkReviewed ? "Guardando..." : "Marcar revisado"}
+                  </button>
+                )}
+                {isAdmin && (
+                  <button className="btn btn-primary btn-sm" type="button" onClick={() => submitReview("approved")} disabled={!canApprove || saving || reconciling}>
+                    {saving && canApprove ? "Guardando..." : "Aprobar"}
+                  </button>
+                )}
+                {(isAdmin || user?.role === "supervisor") ? (
+                  <button className="btn btn-secondary btn-sm" type="button" onClick={() => setEditMode((value) => !value)} disabled={selectedStatus === "deleted"}>
+                    {editMode ? "Cancelar" : "Editar"}
+                  </button>
+                ) : null}
+              </div>
+              <div className="qa-action-group">
+                {isAdmin && canReconcile ? (
+                  <button className="btn btn-secondary btn-sm" type="button" onClick={reconcileSelected} disabled={saving || reconciling}>
+                    {reconciling ? "Conciliando..." : "Conciliar"}
+                  </button>
+                ) : null}
+                {isAdmin && selectedStatus !== "deleted" ? (
+                  <button className="btn btn-ghost-danger btn-sm" type="button" onClick={deleteSelected} disabled={saving || reconciling}>
+                    Papelera
+                  </button>
+                ) : null}
+                {isAdmin && selectedStatus === "deleted" ? (
+                  <button className="btn btn-secondary btn-sm" type="button" onClick={restoreSelected} disabled={saving || reconciling}>
+                    Restaurar
+                  </button>
+                ) : null}
+              </div>
             </div>
 
-            <div className="qa-shared-note">
-              <TextAreaField
-                label="Notas del cierre"
-                value={summaryNotes}
-                onChange={setSummaryNotes}
-                placeholder={canWriteSharedSummary ? "Escribe observaciones generales sobre este cierre." : "Las observaciones se bloquean cuando no hay cambios de estado pendientes."}
-                disabled={!canWriteSharedSummary}
-                readOnly={!canWriteSharedSummary}
-              />
-              <p>
-                {canWriteSharedSummary
-                  ? "Estas observaciones acompañan el cierre completo. Tambien puedes agregar notas dentro de cada seccion."
-                  : "Las observaciones se bloquean cuando no hay cambios pendientes. Puedes seguir usando las notas por seccion."}
-              </p>
-            </div>
+            {!editMode ? (
+              <div className="segmented-control segmented-control-detail">
+                <button className={cx("segmented-button", detailTab === "resumen" && "is-active")} type="button" onClick={() => setDetailTab("resumen")}>
+                  Resumen
+                </button>
+                <button className={cx("segmented-button", detailTab === "revision" && "is-active")} type="button" onClick={() => setDetailTab("revision")}>
+                  Revision
+                  {unresolvedNotes > 0 ? <span className="qa-count-badge qa-count-badge-warn">{unresolvedNotes}</span> : null}
+                </button>
+              </div>
+            ) : null}
 
             {loadingDetail ? <EmptyState title="Cargando detalle" body="Preparando el cierre seleccionado." /> : null}
 
@@ -2834,12 +2801,21 @@ function ReviewPanel({ token, user, employees = [] }) {
                   }}
                 />
               )
+            ) : detailTab === "resumen" ? (
+              <CierreResumen cierre={selectedDetail} />
             ) : (
-              <QaReviewDetail
-                cierre={selectedDetail}
-                onCreateNote={selectedStatus === "deleted" ? null : createNote}
-                onToggleNote={selectedStatus === "deleted" ? null : toggleNoteResolved}
-              />
+              <>
+                <SharedNotesCollapsible
+                  summaryNotes={summaryNotes}
+                  onChangeSummaryNotes={setSummaryNotes}
+                  canWrite={canWriteSharedSummary}
+                />
+                <QaReviewDetail
+                  cierre={selectedDetail}
+                  onCreateNote={selectedStatus === "deleted" ? null : createNote}
+                  onToggleNote={selectedStatus === "deleted" ? null : toggleNoteResolved}
+                />
+              </>
             )}
           </div>
         ) : (
@@ -3589,7 +3565,7 @@ function TiendaDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
 // ---------------------------------------------------------------------------
 // FaltantesPanel — vista de faltantes para supervisor/admin
 // ---------------------------------------------------------------------------
-function FaltantesPanel({ token }) {
+function FaltantesPanel({ token, user }) {
   const today = new Date().toISOString().slice(0, 10);
   const firstOfMonth = today.slice(0, 8) + "01";
   const [fechaDesde, setFechaDesde] = useState(firstOfMonth);
@@ -3705,25 +3681,27 @@ function FaltantesPanel({ token }) {
     <div className="dashboard-grid">
       <Panel eyebrow="Importar" title="Detalle de despachos" subtitle="Archivo .xlsx del sistema de surtidores." accent="#0f766e">
         {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
-        <form className="form-stack" onSubmit={uploadFile}>
-          <label className="upload-card">
-            <input
-              key={fileInputKey}
-              className="upload-input"
-              type="file"
-              accept=".xlsx"
-              onChange={(e) => setFile(e.target.files?.[0] || null)}
-            />
-            <span className="upload-kicker">Archivo fuente</span>
-            <strong>{file ? file.name : "Selecciona el archivo de detalle de despachos (.xlsx)"}</strong>
-            <p>Hoja &quot;Reporte&quot;, datos desde fila 13.</p>
-          </label>
-          <div className="form-submit-row">
-            <button className="btn btn-primary" type="submit" disabled={!file || uploading}>
-              {uploading ? "Importando..." : "Importar y conciliar"}
-            </button>
-          </div>
-        </form>
+        {user?.role === "admin" ? (
+          <form className="form-stack" onSubmit={uploadFile}>
+            <label className="upload-card">
+              <input
+                key={fileInputKey}
+                className="upload-input"
+                type="file"
+                accept=".xlsx"
+                onChange={(e) => setFile(e.target.files?.[0] || null)}
+              />
+              <span className="upload-kicker">Archivo fuente</span>
+              <strong>{file ? file.name : "Selecciona el archivo de detalle de despachos (.xlsx)"}</strong>
+              <p>Hoja &quot;Reporte&quot;, datos desde fila 13.</p>
+            </label>
+            <div className="form-submit-row">
+              <button className="btn btn-primary" type="submit" disabled={!file || uploading}>
+                {uploading ? "Importando..." : "Importar y conciliar"}
+              </button>
+            </div>
+          </form>
+        ) : null}
 
         {imports.length > 0 ? (
           <div className="timeline-list" style={{ marginTop: "1rem" }}>
@@ -3915,7 +3893,7 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
       </div>
 
       {tab === "review" ? <ReviewPanel token={token} user={user} employees={employees} /> : null}
-      {tab === "faltantes" ? <FaltantesPanel token={token} /> : null}
+      {tab === "faltantes" ? <FaltantesPanel token={token} user={user} /> : null}
       {tab === "gaspro" ? <GasproPanel token={token} /> : null}
       {tab === "admin" ? <UserAdminPanel token={token} onRosterChange={loadEmployees} /> : null}
     </AppShell>
