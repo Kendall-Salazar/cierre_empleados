@@ -301,6 +301,61 @@ def init_db():
                 raw_row JSONB NOT NULL DEFAULT '{}'::jsonb
             );
             """,
+            """
+            CREATE TABLE IF NOT EXISTS despacho_detail_imports (
+                id              SERIAL PRIMARY KEY,
+                uploaded_by     INTEGER NOT NULL REFERENCES users(id),
+                original_name   TEXT NOT NULL,
+                storage_path    TEXT NOT NULL,
+                sha256          TEXT NOT NULL,
+                size_bytes      BIGINT NOT NULL DEFAULT 0,
+                date_from       DATE NOT NULL,
+                date_to         DATE NOT NULL,
+                row_count       INTEGER NOT NULL DEFAULT 0,
+                created_at      TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS despacho_detail_rows (
+                id              SERIAL PRIMARY KEY,
+                import_id       INTEGER NOT NULL REFERENCES despacho_detail_imports(id) ON DELETE CASCADE,
+                pistero         TEXT NOT NULL,
+                pistero_raw     TEXT NOT NULL,
+                work_date       DATE NOT NULL,
+                dispatched_at   TIMESTAMP NOT NULL,
+                combustible     TEXT NOT NULL,
+                monto           NUMERIC NOT NULL DEFAULT 0,
+                litros          NUMERIC NOT NULL DEFAULT 0,
+                es_credito      BOOLEAN NOT NULL DEFAULT FALSE,
+                raw_row         JSONB NOT NULL DEFAULT '{}'::jsonb
+            );
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_ddr_pistero_date
+                ON despacho_detail_rows (pistero, work_date);
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS faltante_results (
+                id                      SERIAL PRIMARY KEY,
+                cierre_id               INTEGER NOT NULL REFERENCES cierres(id) ON DELETE CASCADE,
+                import_id               INTEGER NOT NULL REFERENCES despacho_detail_imports(id),
+                total_sistema           NUMERIC NOT NULL DEFAULT 0,
+                total_rendicion         NUMERIC NOT NULL DEFAULT 0,
+                faltante                NUMERIC NOT NULL DEFAULT 0,
+                total_credito_sistema   NUMERIC NOT NULL DEFAULT 0,
+                total_credito_reportado NUMERIC NOT NULL DEFAULT 0,
+                diferencia_credito      NUMERIC NOT NULL DEFAULT 0,
+                por_combustible         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status                  TEXT NOT NULL DEFAULT 'pending'
+                                            CHECK (status IN ('pending','ok','diferencia','overridden')),
+                override_note           TEXT NOT NULL DEFAULT '',
+                override_by             INTEGER REFERENCES users(id),
+                overridden_at           TIMESTAMP,
+                calculated_at           TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at              TIMESTAMP NOT NULL DEFAULT NOW(),
+                UNIQUE (cierre_id, import_id)
+            );
+            """,
         ],
     )
 
