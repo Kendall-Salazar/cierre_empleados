@@ -2675,3 +2675,19 @@ button:disabled {
     scroll-behavior: auto !important;
   }
 }
+
+/* ─── Quantity badge (vouchers, mercadería) ──────────────── */
+.qa-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: var(--line, #e2e8f0);
+  color: var(--ink-soft, #64748b);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.4;
+  vertical-align: middle;
+}

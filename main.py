@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from database import get_db, init_db
+from parsers.despachos_detail import parse_despachos, sha256_file, normalize_name as normalize_pistero_name
 
 APP_TITLE = "Cierre de Caja API"
 TOKEN_TTL_HOURS = int(os.environ.get("TOKEN_TTL_HOURS", "24"))
@@ -131,6 +132,7 @@ class CierrePayload(BaseModel):
     turno: str
     datafono: Optional[str] = ""
     mercaderia_contado: Optional[str] = ""
+    mercaderia_contado_qty: Optional[str] = ""
     vouchers: VouchersModel = Field(default_factory=VouchersModel)
     creditos: List[MovementItem] = Field(default_factory=list)
     mercaderia_credito: List[MovementItem] = Field(default_factory=list)
@@ -331,13 +333,13 @@ def fallback_movement_id(item: Dict[str, Any], movement_type: str) -> str:
         "cliente": str(item.get("cliente", "") or item.get("empresa", "") or "").strip(),
         "referencia": str(item.get("referencia", "") or item.get("numero", "") or "").strip(),
         "descripcion": str(item.get("descripcion", "") or item.get("detalle", "") or "").strip(),
-        "monto": str(item.get("monto", item.get("monto_reportado", "")) or "").strip(),
+        "monto": str(item.get("monto") or item.get("monto_reportado") or "").strip(),
     }
     return str(uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(canonical, sort_keys=True, ensure_ascii=True)))
 
 
 def normalize_movement(item: Dict[str, Any], movement_type: str) -> Dict[str, Any]:
-    amount_text = str(item.get("monto", item.get("monto_reportado", "")) or "")
+    amount_text = str(item.get("monto") or item.get("monto_reportado") or "")
     item_id = item.get("id") or fallback_movement_id(item, movement_type)
     if movement_type in COMPACT_MOVEMENT_FIELDS:
         comprobante = pick_first_text(
@@ -384,7 +386,7 @@ def export_movement_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             item.get("descripcion"),
             item.get("cliente"),
         )
-        monto = decimal_to_float(parse_decimal(item.get("monto", item.get("monto_reportado", 0))))
+        monto = decimal_to_float(parse_decimal(item.get("monto") or item.get("monto_reportado") or 0))
         if not comprobante and monto == 0:
             continue
         rows.append({"monto": monto, "comprobante": comprobante})
@@ -397,6 +399,7 @@ def default_payload() -> Dict[str, Any]:
         "turno": "1",
         "datafono": "",
         "mercaderia_contado": "",
+        "mercaderia_contado_qty": "",
         "vouchers": {
             "bcr_qty": "", "bcr_monto": "",
             "bac_qty": "", "bac_monto": "",
@@ -432,6 +435,7 @@ def normalize_payload(data: Dict[str, Any]) -> Dict[str, Any]:
     payload["turno"] = str(data.get("turno", payload["turno"]) or payload["turno"]).strip() or payload["turno"]
     payload["datafono"] = str(data.get("datafono", payload["datafono"]) or "").strip()
     payload["mercaderia_contado"] = str(data.get("mercaderia_contado", "") or "").strip()
+    payload["mercaderia_contado_qty"] = str(data.get("mercaderia_contado_qty", "") or "").strip()
     payload["observaciones"] = str(data.get("observaciones", payload["observaciones"]) or "").strip()
 
     vouchers = data.get("vouchers") or {}
@@ -807,7 +811,7 @@ def assert_can_edit_cierre(cierre: Dict[str, Any], user: Dict[str, Any]):
             raise HTTPException(status_code=403, detail="No autorizado")
         return
     if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Solo un administrador puede editar cierres directamente")
+        return
     if not can_employee_edit(cierre, user):
         raise HTTPException(status_code=403, detail="El cierre ya no puede ser modificado")
 
@@ -1953,6 +1957,401 @@ def export_monthly_excel(month: str, validated: bool = True, user=Depends(requir
     )
 
 
+# ---------------------------------------------------------------------------
+# Conciliación y Faltantes
+# ---------------------------------------------------------------------------
+
+DESPACHO_UPLOAD_DIR = UPLOAD_ROOT / "despacho-detail"
+
+VOUCHER_AMOUNT_KEYS_CONCIL = [
+    "bcr_monto", "bac_monto", "bac_flotas_monto",
+    "versatec_monto", "fleet_bncr_monto", "fleet_dav_monto",
+]
+
+
+class FaltanteOverridePayload(BaseModel):
+    override_note: str
+
+
+def _compute_faltante(cierre_row: Dict[str, Any], despacho_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    reportado = parse_json_field(cierre_row.get("reportado_json"), {})
+
+    vouchers = reportado.get("vouchers") or {}
+    total_vouchers = sum(parse_decimal(vouchers.get(k, 0)) for k in VOUCHER_AMOUNT_KEYS_CONCIL)
+
+    def sum_items(field: str) -> Decimal:
+        return sum(
+            parse_decimal(item.get("monto_reportado", item.get("monto", 0)))
+            for item in (reportado.get(field) or [])
+            if isinstance(item, dict)
+        )
+
+    total_rendicion = (
+        total_vouchers
+        + sum_items("creditos")
+        + sum_items("depositos")
+        + sum_items("sinpes")
+        + sum_items("pagos")
+        + sum_items("vales")
+        + parse_decimal(reportado.get("mercaderia_contado", 0))
+        + parse_decimal(cierre_row.get("efectivo", 0))
+    )
+
+    total_sistema = Decimal(str(sum(r["monto"] for r in despacho_rows)))
+    total_credito_sistema = Decimal(str(sum(r["monto"] for r in despacho_rows if r["es_credito"])))
+    total_credito_reportado = sum_items("creditos")
+
+    faltante = total_sistema - total_rendicion
+    diferencia_credito = total_credito_sistema - total_credito_reportado
+
+    por_combustible: Dict[str, float] = {}
+    for r in despacho_rows:
+        fuel = r["combustible"]
+        por_combustible[fuel] = por_combustible.get(fuel, 0.0) + float(r["monto"])
+
+    status = "ok" if abs(faltante) < Decimal("1") else "diferencia"
+
+    return {
+        "total_sistema": float(total_sistema),
+        "total_rendicion": float(total_rendicion),
+        "faltante": float(faltante),
+        "total_credito_sistema": float(total_credito_sistema),
+        "total_credito_reportado": float(total_credito_reportado),
+        "diferencia_credito": float(diferencia_credito),
+        "por_combustible": por_combustible,
+        "status": status,
+    }
+
+
+def _upsert_faltante(db, cierre_id: int, import_id: int, data: Dict[str, Any]) -> int:
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        INSERT INTO faltante_results
+            (cierre_id, import_id, total_sistema, total_rendicion, faltante,
+             total_credito_sistema, total_credito_reportado, diferencia_credito,
+             por_combustible, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)
+        ON CONFLICT (cierre_id, import_id) DO UPDATE SET
+            total_sistema           = EXCLUDED.total_sistema,
+            total_rendicion         = EXCLUDED.total_rendicion,
+            faltante                = EXCLUDED.faltante,
+            total_credito_sistema   = EXCLUDED.total_credito_sistema,
+            total_credito_reportado = EXCLUDED.total_credito_reportado,
+            diferencia_credito      = EXCLUDED.diferencia_credito,
+            por_combustible         = EXCLUDED.por_combustible,
+            status                  = EXCLUDED.status,
+            calculated_at           = NOW(),
+            updated_at              = NOW()
+        RETURNING id
+        """,
+        (
+            cierre_id, import_id,
+            data["total_sistema"], data["total_rendicion"], data["faltante"],
+            data["total_credito_sistema"], data["total_credito_reportado"],
+            data["diferencia_credito"],
+            json.dumps(data["por_combustible"]),
+            data["status"],
+        ),
+    )
+    row = cur.fetchone()
+    return row["id"]
+
+
+def _auto_conciliar(db, import_id: int, date_from: date, date_to: date):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT id, fecha, empleado, employee_id, reportado_json, efectivo
+        FROM cierres
+        WHERE tipo = 'pista'
+          AND status NOT IN ('deleted')
+          AND fecha BETWEEN %s AND %s
+        """,
+        (date_from, date_to),
+    )
+    cierres = [dict(r) for r in cur.fetchall()]
+    matched = 0
+    for cierre in cierres:
+        nombre = cierre.get("empleado") or ""
+        if not nombre:
+            continue
+        normalized = normalize_pistero_name(nombre)
+        cur2 = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur2.execute(
+            """
+            SELECT monto, es_credito, combustible
+            FROM despacho_detail_rows
+            WHERE import_id = %s AND pistero = %s AND work_date = %s
+            """,
+            (import_id, normalized, cierre["fecha"]),
+        )
+        rows = [dict(r) for r in cur2.fetchall()]
+        if not rows:
+            continue
+        data = _compute_faltante(cierre, rows)
+        _upsert_faltante(db, cierre["id"], import_id, data)
+        matched += 1
+    return matched
+
+
+@app.post("/api/imports/despacho-detail")
+def import_despacho_detail(
+    file: UploadFile = File(...),
+    db=Depends(get_db),
+    user=Depends(require_roles("supervisor", "admin")),
+):
+    DESPACHO_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_path = DESPACHO_UPLOAD_DIR / f"tmp_{uuid.uuid4().hex}_{file.filename}"
+    content = file.file.read()
+    tmp_path.write_bytes(content)
+
+    try:
+        sha = sha256_file(str(tmp_path))
+        cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("SELECT id FROM despacho_detail_imports WHERE sha256 = %s LIMIT 1", (sha,))
+        if cur.fetchone():
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=409, detail="Este archivo ya fue importado anteriormente.")
+
+        rows = parse_despachos(str(tmp_path))
+        if not rows:
+            tmp_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=422, detail="El archivo no contiene despachos válidos.")
+
+        dates = [r["work_date"] for r in rows]
+        date_from = min(dates)
+        date_to = max(dates)
+
+        final_path = DESPACHO_UPLOAD_DIR / f"{sha[:16]}_{file.filename}"
+        tmp_path.rename(final_path)
+
+        insert_cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        insert_cur.execute(
+            """
+            INSERT INTO despacho_detail_imports
+                (uploaded_by, original_name, storage_path, sha256, size_bytes, date_from, date_to, row_count)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (user["id"], file.filename, str(final_path), sha, len(content), date_from, date_to, len(rows)),
+        )
+        import_id = insert_cur.fetchone()["id"]
+
+        row_cur = db.cursor()
+        for r in rows:
+            row_cur.execute(
+                """
+                INSERT INTO despacho_detail_rows
+                    (import_id, pistero, pistero_raw, work_date, dispatched_at,
+                     combustible, monto, litros, es_credito, raw_row)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)
+                """,
+                (
+                    import_id, r["pistero"], r["pistero_raw"],
+                    r["work_date"], r["dispatched_at"],
+                    r["combustible"], r["monto"], r["litros"], r["es_credito"],
+                    json.dumps({}),
+                ),
+            )
+
+        matched = _auto_conciliar(db, import_id, date_from, date_to)
+        db.commit()
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        db.rollback()
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Error al procesar el archivo: {exc}") from exc
+
+    return {
+        "import_id": import_id,
+        "row_count": len(rows),
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "matched_cierres": matched,
+    }
+
+
+@app.post("/api/cierres/{cierre_id}/conciliar")
+def conciliar_cierre(
+    cierre_id: int,
+    db=Depends(get_db),
+    user=Depends(require_roles("supervisor", "admin")),
+):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM cierres WHERE id = %s AND tipo = 'pista' LIMIT 1", (cierre_id,))
+    cierre = cur.fetchone()
+    if not cierre:
+        raise HTTPException(status_code=404, detail="Cierre no encontrado")
+    cierre = dict(cierre)
+
+    normalized = normalize_pistero_name(cierre.get("empleado") or "")
+    if not normalized:
+        raise HTTPException(status_code=422, detail="El cierre no tiene empleado asignado")
+
+    cur.execute(
+        """
+        SELECT id, date_from, date_to
+        FROM despacho_detail_imports
+        WHERE date_from <= %s AND date_to >= %s
+        ORDER BY created_at DESC LIMIT 1
+        """,
+        (cierre["fecha"], cierre["fecha"]),
+    )
+    imp = cur.fetchone()
+    if not imp:
+        raise HTTPException(status_code=404, detail="No hay archivo de despachos importado para esta fecha")
+
+    cur.execute(
+        """
+        SELECT monto, es_credito, combustible
+        FROM despacho_detail_rows
+        WHERE import_id = %s AND pistero = %s AND work_date = %s
+        """,
+        (imp["id"], normalized, cierre["fecha"]),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+
+    data = _compute_faltante(cierre, rows)
+    faltante_id = _upsert_faltante(db, cierre_id, imp["id"], data)
+    db.commit()
+
+    return {"faltante_id": faltante_id, **data}
+
+
+@app.get("/api/cierres/{cierre_id}/faltante")
+def get_faltante_cierre(
+    cierre_id: int,
+    db=Depends(get_db),
+    user=Depends(get_current_user),
+):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT employee_id, status FROM cierres WHERE id = %s LIMIT 1", (cierre_id,))
+    cierre = cur.fetchone()
+    if not cierre:
+        raise HTTPException(status_code=404, detail="Cierre no encontrado")
+
+    if user["role"] == "employee":
+        if cierre["employee_id"] != user["id"]:
+            raise HTTPException(status_code=403, detail="No autorizado")
+
+    cur.execute(
+        "SELECT * FROM faltante_results WHERE cierre_id = %s ORDER BY calculated_at DESC LIMIT 1",
+        (cierre_id,),
+    )
+    row = cur.fetchone()
+    if not row:
+        return {"status": "pending", "faltante": None}
+    return dict(row)
+
+
+@app.get("/api/faltantes")
+def list_faltantes(
+    fecha_desde: Optional[str] = None,
+    fecha_hasta: Optional[str] = None,
+    empleado: Optional[str] = None,
+    db=Depends(get_db),
+    user=Depends(require_roles("supervisor", "admin")),
+):
+    params: List[Any] = []
+    conditions = ["c.tipo = 'pista'", "c.status != 'deleted'"]
+
+    if fecha_desde:
+        try:
+            conditions.append("c.fecha >= %s")
+            params.append(date.fromisoformat(fecha_desde))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="fecha_desde inválida")
+    if fecha_hasta:
+        try:
+            conditions.append("c.fecha <= %s")
+            params.append(date.fromisoformat(fecha_hasta))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="fecha_hasta inválida")
+    if empleado:
+        conditions.append("lower(c.empleado) = lower(%s)")
+        params.append(empleado)
+
+    where = " AND ".join(conditions)
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        f"""
+        SELECT c.id AS cierre_id, c.fecha, c.empleado, c.turno,
+               f.id AS faltante_id, f.faltante, f.diferencia_credito,
+               f.total_sistema, f.total_rendicion,
+               f.total_credito_sistema, f.total_credito_reportado,
+               f.por_combustible, f.status AS faltante_status,
+               f.override_note, f.calculated_at
+        FROM cierres c
+        LEFT JOIN faltante_results f ON f.cierre_id = c.id
+        WHERE {where}
+        ORDER BY c.fecha DESC, c.empleado ASC
+        """,
+        params,
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+@app.patch("/api/faltantes/{faltante_id}/override")
+def override_faltante(
+    faltante_id: int,
+    payload: FaltanteOverridePayload,
+    db=Depends(get_db),
+    user=Depends(require_roles("supervisor", "admin")),
+):
+    if not payload.override_note.strip():
+        raise HTTPException(status_code=422, detail="Se requiere una nota de justificación")
+
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute("SELECT * FROM faltante_results WHERE id = %s LIMIT 1", (faltante_id,))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Resultado de faltante no encontrado")
+
+    original_faltante = float(row["faltante"])
+
+    db.cursor().execute(
+        """
+        UPDATE faltante_results
+        SET status = 'overridden',
+            override_note = %s,
+            override_by = %s,
+            overridden_at = NOW(),
+            updated_at = NOW()
+        WHERE id = %s
+        """,
+        (payload.override_note.strip(), user["id"], faltante_id),
+    )
+    save_audit_log(db, row["cierre_id"], user["id"], "faltante_override", {
+        "faltante_id": faltante_id,
+        "original_faltante": original_faltante,
+        "nota": payload.override_note.strip(),
+    })
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/imports/despacho-detail")
+def list_despacho_imports(
+    db=Depends(get_db),
+    user=Depends(require_roles("supervisor", "admin")),
+):
+    cur = db.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+    cur.execute(
+        """
+        SELECT d.*, u.full_name AS uploaded_by_name
+        FROM despacho_detail_imports d
+        JOIN users u ON u.id = d.uploaded_by
+        ORDER BY d.created_at DESC
+        LIMIT 50
+        """,
+    )
+    return [dict(r) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------------------
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "frontend", "dist")
 if os.path.exists(FRONTEND_DIR):
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")), name="assets")

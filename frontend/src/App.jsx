@@ -330,6 +330,7 @@ function emptyForm(defaultTurno = "1") {
     turno: defaultTurno || "1",
     datafono: "",
     mercaderia_contado: "",
+    mercaderia_contado_qty: "",
     vouchers: {
       bcr_qty: "",
       bcr_monto: "",
@@ -1425,7 +1426,10 @@ function QaReviewDetail({ cierre, onCreateNote, onToggleNote }) {
           <div className="qa-flat-list">
             {vouchers.length > 0 ? vouchers.map((item) => (
               <div className="qa-flat-row" key={item.label}>
-                <span>{item.label}</span>
+                <span>
+                  {item.qty > 0 && <span className="qa-count-badge">{item.qty}</span>}
+                  {item.label}
+                </span>
                 <strong>CRC {money(item.amount)}</strong>
               </div>
             )) : <div className="qa-note-empty">Sin vouchers reportados.</div>}
@@ -1443,7 +1447,12 @@ function QaReviewDetail({ cierre, onCreateNote, onToggleNote }) {
         >
           <div className="qa-flat-list">
             <div className="qa-flat-row">
-              <span>Venta directa</span>
+              <span>
+                {parseAmount(payload.mercaderia_contado_qty) > 0 && (
+                  <span className="qa-count-badge">{parseAmount(payload.mercaderia_contado_qty)}</span>
+                )}
+                Venta directa
+              </span>
               <strong>CRC {money(payload.mercaderia_contado)}</strong>
             </div>
           </div>
@@ -1729,6 +1738,12 @@ function CierreForm({
             value={form.mercaderia_contado || ""}
             onChange={(value) => setForm({ ...form, mercaderia_contado: value })}
           />
+          <TextField
+            label="Cantidad de facturas"
+            value={form.mercaderia_contado_qty || ""}
+            onChange={(value) => setForm({ ...form, mercaderia_contado_qty: value })}
+            placeholder="0"
+          />
         </div>
       </FormSection>
 
@@ -1827,12 +1842,23 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState(null);
   const [cierreCountForDate, setCierreCountForDate] = useState(0);
+  const [faltantes, setFaltantes] = useState({});
 
   const load = async () => {
     setLoading(true);
     try {
       const data = await api("/api/cierres", {}, token);
       setCierres(data);
+      const faltanteMap = {};
+      await Promise.allSettled(
+        data.slice(0, 10).map(async (c) => {
+          try {
+            const f = await api(`/api/cierres/${c.id}/faltante`, {}, token);
+            if (f && f.faltante != null) faltanteMap[c.id] = f;
+          } catch { /* silencioso */ }
+        })
+      );
+      setFaltantes(faltanteMap);
     } catch (err) {
       setMessage({ tone: "error", text: err.message });
     } finally {
@@ -1998,6 +2024,12 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
                 {cierres.map((cierre) => {
                   const canEdit = canEditCierre(cierre);
                   const editTime = remainingEditTime(cierre);
+                  const faltanteData = faltantes[cierre.id];
+                  const faltanteVal = faltanteData?.faltante;
+                  const faltanteColor = faltanteVal == null ? null
+                    : faltanteVal < 0 ? "#2f6fed"
+                    : faltanteVal < 400 ? "#0f9d76"
+                    : "#d94b4b";
                   return (
                     <div className="history-card" key={cierre.id}>
                       <div className="history-card-main">
@@ -2010,6 +2042,11 @@ function EmployeeDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
                           {cierre.audit_notes ? ` / ${cierre.audit_notes}` : ""}
                         </p>
                         <span className="history-total">CRC {money(cierre.resumen_reportado?.total_reportado)}</span>
+                        {faltanteVal != null ? (
+                          <span style={{ display: "inline-block", marginTop: "0.25rem", padding: "0.125rem 0.5rem", borderRadius: "4px", background: "var(--surface-alt, #f5f5f5)", fontSize: "0.8rem", fontWeight: "700", color: faltanteColor }}>
+                            Faltante: {CRC_SYMBOL} {money(faltanteVal)}
+                          </span>
+                        ) : null}
                         {editTime ? <span className="edit-time-badge">{editTime}</span> : null}
                         {!canEdit && !editTime ? <span className="edit-time-expired">Edicion cerrada</span> : null}
                       </div>
@@ -2182,6 +2219,14 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
               onChange={(v) => updateField("mercaderia_contado", v)}
             />
           </div>
+          <div className="admin-editor-field">
+            <TextField
+              label="Cantidad de facturas"
+              value={editPayload.mercaderia_contado_qty || ""}
+              onChange={(v) => updateField("mercaderia_contado_qty", v)}
+              placeholder="0"
+            />
+          </div>
         </div>
       </div>
 
@@ -2228,7 +2273,7 @@ function AdminCierreEditor({ cierre, token, onSaved }) {
                       {fieldKey.includes("monto") ? (
                         <MoneyField
                           label={fieldLabel(fieldKey)}
-                          value={movementAmountValue(item)}
+                          value={item[fieldKey] ?? movementAmountValue(item)}
                           onChange={(v) => updateItem(section.key, index, fieldKey, v)}
                         />
                       ) : (
@@ -2731,7 +2776,7 @@ function ReviewPanel({ token, user, employees = [] }) {
               )}
               {(isAdmin || user?.role === "supervisor") ? (
                 <button className="btn btn-secondary" type="button" onClick={() => setEditMode((value) => !value)} disabled={selectedStatus === "deleted"}>
-                  {editMode ? "Cancelar edicion" : (isAdmin ? "Editar cierre" : "Editar depositos")}
+                  {editMode ? "Cancelar edicion" : "Editar cierre"}
                 </button>
               ) : null}
               {isAdmin && canReconcile ? (
@@ -2769,7 +2814,7 @@ function ReviewPanel({ token, user, employees = [] }) {
 
             {loadingDetail ? <EmptyState title="Cargando detalle" body="Preparando el cierre seleccionado." /> : null}
 
-            {editMode && isAdmin ? (
+            {editMode && (isAdmin || user?.role === "supervisor") ? (
               selectedDetail.tipo === "tienda" ? (
                 <AdminTiendaEditor
                   cierre={selectedDetail}
@@ -2789,29 +2834,12 @@ function ReviewPanel({ token, user, employees = [] }) {
                   }}
                 />
               )
-            ) : editMode && user?.role === "supervisor" && selectedDetail.tipo !== "tienda" ? (
-              <SupervisorDepositEditor
-                cierre={selectedDetail}
-                token={token}
-                onSaved={async () => {
-                  setEditMode(false);
-                  await refreshCurrent(selectedDetail.id);
-                }}
-              />
             ) : (
-              <>
-                <CierreSnapshot
-                  payload={selectedDetail.reportado_json}
-                  reportadoSummary={selectedDetail.resumen_reportado}
-                  validadoSummary={selectedDetail.resumen_validado}
-                  auditNotes={selectedDetail.audit_notes}
-                />
-                <QaReviewDetail
-                  cierre={selectedDetail}
-                  onCreateNote={selectedStatus === "deleted" ? null : createNote}
-                  onToggleNote={selectedStatus === "deleted" ? null : toggleNoteResolved}
-                />
-              </>
+              <QaReviewDetail
+                cierre={selectedDetail}
+                onCreateNote={selectedStatus === "deleted" ? null : createNote}
+                onToggleNote={selectedStatus === "deleted" ? null : toggleNoteResolved}
+              />
             )}
           </div>
         ) : (
@@ -3558,6 +3586,275 @@ function TiendaDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// FaltantesPanel — vista de faltantes para supervisor/admin
+// ---------------------------------------------------------------------------
+function FaltantesPanel({ token }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const firstOfMonth = today.slice(0, 8) + "01";
+  const [fechaDesde, setFechaDesde] = useState(firstOfMonth);
+  const [fechaHasta, setFechaHasta] = useState(today);
+  const [empleado, setEmpleado] = useState("");
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState(null);
+  const [file, setFile] = useState(null);
+  const [fileInputKey, setFileInputKey] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [imports, setImports] = useState([]);
+  const [overrideId, setOverrideId] = useState(null);
+  const [overrideNote, setOverrideNote] = useState("");
+  const [overriding, setOverriding] = useState(false);
+
+  const loadImports = async () => {
+    try {
+      const data = await api("/api/imports/despacho-detail", {}, token);
+      setImports(data);
+    } catch {
+      // silencioso
+    }
+  };
+
+  const loadFaltantes = async () => {
+    setLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (fechaDesde) params.set("fecha_desde", fechaDesde);
+      if (fechaHasta) params.set("fecha_hasta", fechaHasta);
+      if (empleado.trim()) params.set("empleado", empleado.trim());
+      const data = await api(`/api/faltantes?${params}`, {}, token);
+      setRows(data);
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadImports();
+    loadFaltantes();
+  }, [token]);
+
+  const uploadFile = async (event) => {
+    event.preventDefault();
+    if (!file) return;
+    const form = new FormData();
+    form.append("file", file);
+    setUploading(true);
+    setMessage(null);
+    try {
+      const data = await api("/api/imports/despacho-detail", { method: "POST", body: form }, token);
+      setMessage({
+        tone: "success",
+        text: `Importado: ${data.row_count} despachos (${data.date_from} al ${data.date_to}). ${data.matched_cierres} cierres conciliados.`,
+      });
+      setFile(null);
+      setFileInputKey((k) => k + 1);
+      await loadImports();
+      await loadFaltantes();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const conciliar = async (cierreId) => {
+    try {
+      await api(`/api/cierres/${cierreId}/conciliar`, { method: "POST" }, token);
+      await loadFaltantes();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    }
+  };
+
+  const submitOverride = async () => {
+    if (!overrideNote.trim()) return;
+    setOverriding(true);
+    try {
+      await api(`/api/faltantes/${overrideId}/override`, {
+        method: "PATCH",
+        body: JSON.stringify({ override_note: overrideNote }),
+      }, token);
+      setOverrideId(null);
+      setOverrideNote("");
+      await loadFaltantes();
+    } catch (err) {
+      setMessage({ tone: "error", text: err.message });
+    } finally {
+      setOverriding(false);
+    }
+  };
+
+  const totalFaltante = rows.reduce((s, r) => s + (r.faltante ?? 0), 0);
+
+  const faltanteColor = (v) => {
+    if (v == null) return "var(--text-secondary)";
+    if (v < 0) return "#2f6fed";
+    if (v < 400) return "var(--green)";
+    return "var(--red)";
+  };
+
+  const statusBadge = (s) => {
+    const map = { ok: "Cuadrado", diferencia: "Diferencia", overridden: "Ajustado", pending: "Pendiente" };
+    return map[s] || s || "—";
+  };
+
+  return (
+    <div className="dashboard-grid">
+      <Panel eyebrow="Importar" title="Detalle de despachos" subtitle="Archivo .xlsx del sistema de surtidores." accent="#0f766e">
+        {message ? <Banner tone={message.tone}>{message.text}</Banner> : null}
+        <form className="form-stack" onSubmit={uploadFile}>
+          <label className="upload-card">
+            <input
+              key={fileInputKey}
+              className="upload-input"
+              type="file"
+              accept=".xlsx"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+            <span className="upload-kicker">Archivo fuente</span>
+            <strong>{file ? file.name : "Selecciona el archivo de detalle de despachos (.xlsx)"}</strong>
+            <p>Hoja &quot;Reporte&quot;, datos desde fila 13.</p>
+          </label>
+          <div className="form-submit-row">
+            <button className="btn btn-primary" type="submit" disabled={!file || uploading}>
+              {uploading ? "Importando..." : "Importar y conciliar"}
+            </button>
+          </div>
+        </form>
+
+        {imports.length > 0 ? (
+          <div className="timeline-list" style={{ marginTop: "1rem" }}>
+            {imports.slice(0, 5).map((imp) => (
+              <div className="timeline-card" key={imp.id}>
+                <div className="timeline-card-copy">
+                  <strong>{imp.original_name}</strong>
+                  <span>{imp.date_from} → {imp.date_to} · {imp.row_count} despachos</span>
+                  <small>{imp.uploaded_by_name} · {formatDateTimeLabel(imp.created_at)}</small>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Panel>
+
+      <Panel
+        eyebrow="Faltantes"
+        title="Resumen por pistero"
+        accent="#13315c"
+        action={<button className="btn btn-ghost" type="button" onClick={loadFaltantes}>Actualizar</button>}
+      >
+        <div className="field-grid field-grid-3" style={{ marginBottom: "1rem" }}>
+          <TextField label="Desde" type="date" value={fechaDesde} onChange={setFechaDesde} />
+          <TextField label="Hasta" type="date" value={fechaHasta} onChange={setFechaHasta} />
+          <TextField label="Pistero" placeholder="Nombre (opcional)" value={empleado} onChange={setEmpleado} />
+        </div>
+        <div className="form-submit-row" style={{ marginBottom: "1rem" }}>
+          <button className="btn btn-secondary" type="button" onClick={loadFaltantes}>Filtrar</button>
+        </div>
+
+        {loading ? (
+          <EmptyState title="Cargando" body="Consultando faltantes..." />
+        ) : rows.length === 0 ? (
+          <EmptyState title="Sin datos" body="No hay faltantes para los filtros seleccionados." />
+        ) : (
+          <>
+            <div style={{ overflowX: "auto" }}>
+              <table className="data-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.875rem" }}>
+                <thead>
+                  <tr>
+                    <th style={{ textAlign: "left", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>Fecha</th>
+                    <th style={{ textAlign: "left", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>Pistero</th>
+                    <th style={{ textAlign: "right", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>Faltante</th>
+                    <th style={{ textAlign: "right", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>Dif. Crédito</th>
+                    <th style={{ textAlign: "center", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>Estado</th>
+                    <th style={{ textAlign: "center", padding: "0.5rem 0.75rem", borderBottom: "1px solid var(--border)" }}>Acciones</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.cierre_id} style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+                      <td style={{ padding: "0.5rem 0.75rem" }}>
+                        <div style={{ fontWeight: "600", background: "var(--yellow, #fef08a)", color: "#1a1a1a", padding: "0.125rem 0.5rem", borderRadius: "4px", display: "inline-block", fontSize: "0.8rem" }}>
+                          {formatDateLabel(r.fecha)}
+                        </div>
+                      </td>
+                      <td style={{ padding: "0.5rem 0.75rem", fontWeight: "600" }}>{r.empleado || "—"}</td>
+                      <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: "700", color: faltanteColor(r.faltante) }}>
+                        {r.faltante != null ? `${CRC_SYMBOL} ${money(r.faltante)}` : "—"}
+                      </td>
+                      <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", color: faltanteColor(r.diferencia_credito) }}>
+                        {r.diferencia_credito != null ? `${CRC_SYMBOL} ${money(r.diferencia_credito)}` : "—"}
+                      </td>
+                      <td style={{ padding: "0.5rem 0.75rem", textAlign: "center" }}>
+                        <span className={`status-badge status-${r.faltante_status || "pending"}`}>
+                          {statusBadge(r.faltante_status)}
+                        </span>
+                      </td>
+                      <td style={{ padding: "0.5rem 0.75rem", textAlign: "center" }}>
+                        <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center" }}>
+                          {r.faltante_status !== "overridden" ? (
+                            <button className="btn btn-ghost" style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem" }} type="button"
+                              onClick={() => conciliar(r.cierre_id)}>
+                              Recalcular
+                            </button>
+                          ) : null}
+                          {r.faltante_id ? (
+                            <button className="btn btn-ghost" style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem" }} type="button"
+                              onClick={() => { setOverrideId(r.faltante_id); setOverrideNote(""); }}>
+                              Ajustar
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr style={{ borderTop: "2px solid var(--border)" }}>
+                    <td colSpan={2} style={{ padding: "0.5rem 0.75rem", fontWeight: "700" }}>Total</td>
+                    <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontWeight: "700", color: faltanteColor(totalFaltante) }}>
+                      {CRC_SYMBOL} {money(totalFaltante)}
+                    </td>
+                    <td colSpan={3} />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+
+            {overrideId ? (
+              <div className="modal-backdrop" onClick={() => setOverrideId(null)}>
+                <div className="modal-card" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "460px" }}>
+                  <h3 style={{ marginTop: 0 }}>Ajustar conciliación</h3>
+                  <p style={{ fontSize: "0.875rem", color: "var(--text-secondary)" }}>
+                    Explicá el motivo del ajuste. Esta nota quedará registrada en el audito.
+                  </p>
+                  <textarea
+                    className="textarea"
+                    rows={4}
+                    placeholder="Ej: El pistero registró como crédito ventas que fueron de contado para EMPRESA X..."
+                    value={overrideNote}
+                    onChange={(e) => setOverrideNote(e.target.value)}
+                    style={{ width: "100%", resize: "vertical" }}
+                  />
+                  <div className="form-submit-row" style={{ marginTop: "1rem" }}>
+                    <button className="btn btn-ghost" type="button" onClick={() => setOverrideId(null)}>Cancelar</button>
+                    <button className="btn btn-primary" type="button" disabled={!overrideNote.trim() || overriding} onClick={submitOverride}>
+                      {overriding ? "Guardando..." : "Confirmar ajuste"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   const [tab, setTab] = useState("review");
   const [employees, setEmployees] = useState([]);
@@ -3578,7 +3875,10 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
   }, [token]);
 
   const currentViewLabel =
-    tab === "review" ? "Cierres" : tab === "gaspro" ? "Gaspro" : "Personal";
+    tab === "review" ? "Cierres"
+    : tab === "gaspro" ? "Gaspro"
+    : tab === "faltantes" ? "Faltantes"
+    : "Personal";
 
   return (
     <AppShell
@@ -3599,6 +3899,9 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
         <button className={cx("segmented-button", tab === "review" && "is-active")} type="button" onClick={() => setTab("review")}>
           Revision
         </button>
+        <button className={cx("segmented-button", tab === "faltantes" && "is-active")} type="button" onClick={() => setTab("faltantes")}>
+          Faltantes
+        </button>
         {canAccessGaspro ? (
           <button className={cx("segmented-button", tab === "gaspro" && "is-active")} type="button" onClick={() => setTab("gaspro")}>
             Gaspro
@@ -3612,6 +3915,7 @@ function StaffDashboard({ token, user, onLogout, isDark, onToggleTheme }) {
       </div>
 
       {tab === "review" ? <ReviewPanel token={token} user={user} employees={employees} /> : null}
+      {tab === "faltantes" ? <FaltantesPanel token={token} /> : null}
       {tab === "gaspro" ? <GasproPanel token={token} /> : null}
       {tab === "admin" ? <UserAdminPanel token={token} onRosterChange={loadEmployees} /> : null}
     </AppShell>
